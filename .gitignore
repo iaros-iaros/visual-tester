@@ -1,0 +1,48 @@
+# Secrets
+.env
+
+# Docker volumes / container runtime state
+n8n_data/
+caddy_data/
+caddy_config/
+postgres_data/
+crash.journal
+
+# Everything the pipeline produces: baselines, captures, evidence, reports
+local_files/
+
+# Database dumps
+backups/
+
+# Fonts mounted into browserless (large binaries)
+fonts/
+
+# Build outputs. assemble.py writes its desktop_<name>.json / mobile_<name>.json /
+# updater_<name>.json deployables to /tmp/visual-tester-deploy by default, so they
+# should never appear here at all; these rules stay as a backstop for --out . and
+# for artifacts from older runs. The *_live.json snapshots are the exception: they
+# are the committed record of what is actually running, refreshed by
+# ./export_live_workflows.sh.
+desktop_*.json
+mobile_*.json
+updater_*.json
+!desktop_live.json
+!mobile_live.json
+!updater_live.json
+
+# Local tooling config (the MCP file carries an inline auth token)
+.mcp.json
+.claude/
+.gemini/
+
+# Python cache / logs / OS litter
+__pycache__/
+*.pyc
+*.log
+.DS_Store
+
+# Local hook term list (would republish what it guards)
+build/hooks/terms.local
+
+# Site blocks for unrelated services sharing this Caddy (names other infrastructure)
+caddy_local/

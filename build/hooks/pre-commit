@@ -1,0 +1,56 @@
+#!/bin/sh
+# Blocks a commit that would publish the target site's identity or a real credential.
+#
+# This repo is public and once named the site under test in seven files, one of them a
+# functional reference that any workflow re-export reinstated. Cleaning it took a full
+# history rewrite and a force-push; this hook is what makes a second one unnecessary.
+#
+# The terms are NOT stored here -- writing them into a tracked file in a public repo
+# would republish the very thing they guard. They come from two untracked sources:
+#   .env                    TARGET_WEBSITE_URL -> the host and its bare name
+#   build/hooks/terms.local one extra term per line (gitignored, optional)
+#
+# Install (any clone): git config core.hooksPath build/hooks
+# Bypass, deliberately: git commit --no-verify
+
+root=$(git rev-parse --show-toplevel)
+staged=$(git diff --cached --name-only --diff-filter=ACM | grep -v '^build/hooks/')
+[ -z "$staged" ] && exit 0
+
+terms=""
+if [ -f "$root/.env" ]; then
+  host=$(sed -n 's#^TARGET_WEBSITE_URL=[[:space:]]*https\{0,1\}://##p' "$root/.env" | tr -d '"' | tr -d "'" | sed 's#/.*##' | head -1)
+  if [ -n "$host" ]; then
+    terms="$host
+$(printf '%s' "$host" | sed 's#\..*##')"
+  fi
+fi
+if [ -f "$root/build/hooks/terms.local" ]; then
+  terms="$terms
+$(grep -vE '^[[:space:]]*(#|$)' "$root/build/hooks/terms.local")"
+fi
+pattern=$(printf '%s' "$terms" | grep -v '^$' | sed 's/[.[\*^$]/\\&/g' | paste -sd '|' -)
+
+# Real credentials. All-zero / all-X tokens are documentation, not secrets.
+SECRET='hooks\.slack\.com/services/T[A-Z0-9]{8}[A-Z0-9]*/B[A-Z0-9]{8}[A-Z0-9]*/[A-Za-z0-9]{24}|AIza[A-Za-z0-9_-]{30,}|sk-[A-Za-z0-9]{32,}|eyJ[A-Za-z0-9_-]{20,}\.[A-Za-z0-9_-]{20,}\.'
+
+fail=0
+for f in $staged; do
+  blob=$(git show ":$f" 2>/dev/null) || continue
+  if [ -n "$pattern" ]; then
+    hit=$(printf '%s' "$blob" | grep -oiE "$pattern" | sort -u | tr '\n' ' ')
+    [ -n "$hit" ] && { echo "pre-commit: $f names the site under test: $hit" >&2; fail=1; }
+  fi
+  sec=$(printf '%s' "$blob" | grep -oE "$SECRET" \
+        | grep -vE 'XXXX|0000000|EXAMPLE|PLACEHOLDER' \
+        | sed -E 's#(services/).*#\1...#' | sort -u | tr '\n' ' ')
+  [ -n "$sec" ] && { echo "pre-commit: $f looks like it carries a real credential: $sec" >&2; fail=1; }
+done
+
+if [ "$fail" -ne 0 ]; then
+  echo "" >&2
+  echo "Describe the page by its role instead, and keep credentials in .env." >&2
+  echo "If this is genuinely fine: git commit --no-verify" >&2
+  exit 1
+fi
+exit 0

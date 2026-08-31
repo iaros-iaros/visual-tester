@@ -1,0 +1,139 @@
+{
+  "updatedAt": "2026-04-20T13:34:35.405Z",
+  "createdAt": "2025-12-31T19:23:39.357Z",
+  "id": "PUVxCM0kV2Um7rbs",
+  "name": "Visual Testing - Updater",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "path": "update-baseline",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2.1,
+      "position": [
+        0,
+        0
+      ],
+      "id": "ae35d0af-370c-40c8-bef6-45d2362fedc4",
+      "name": "Webhook",
+      "webhookId": "e4d724b1-d112-47bc-a08b-a3aa19e2875e"
+    },
+    {
+      "parameters": {
+        "jsCode": "const fs = require('fs');\n// Upstream (Check Token) may emit a structured auth error \u2014 relay it untouched.\nconst pre = $input.item.json;\nif (pre && pre.status === 'error') return { json: pre };\nconst query = pre.query || {};\nconst slug = query.slug;\n\n// Security: Validate slug to prevent directory traversal\nif (!slug || !/^[a-zA-Z0-9\\-_.]+$/.test(slug)) {\n  return { json: { status: 'error', httpCode: 400, message: 'Invalid or missing slug' } };\n}\n\nconst sourcePath = `/files/new_screenshots/new_${slug}.png`;\nconst destPath = `/files/baseline_screenshots/baseline_${slug}.png`;\n\n// v2 hardening (2026-07-29). Reports live for days but new_screenshots/ is\n// wiped daily (21:00 cron) and re-captured up to 3x/day \u2014 an Accept click on\n// an older report used to copy whatever file happened to be at that path NOW,\n// i.e. possibly a capture the reviewer never saw, or nothing at all. Refuse:\n//   1. missing source (deleted by the daily wipe);\n//   2. non-PNG source (a capture_error JSON payload must never become the\n//      baseline \u2014 it would then poison every later run for this page);\n//   3. source RE-CAPTURED after the report was generated (reportTs query\n//      param, epoch ms, added by Generate Report) \u2014 the reviewer approved a\n//      different image; re-review the latest report instead.\n// Refusals return structured errors (httpCode passthrough to the Respond\n// node) so the report UI can show the actual reason instead of a generic 500.\ntry {\n  if (!fs.existsSync(sourcePath)) {\n    return { json: { status: 'error', httpCode: 409, message: `No current capture for ${slug} \u2014 the screenshot was cleaned up (daily 21:00 wipe). Re-run the tests and accept from the fresh report.` } };\n  }\n  const fd = fs.openSync(sourcePath, 'r');\n  const head = Buffer.alloc(8);\n  const n = fs.readSync(fd, head, 0, 8, 0);\n  fs.closeSync(fd);\n  const PNG_MAGIC = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]);\n  if (n !== 8 || !head.equals(PNG_MAGIC)) {\n    return { json: { status: 'error', httpCode: 409, message: `Current capture for ${slug} is not a valid PNG (failed capture payload) \u2014 refusing to make it the baseline.` } };\n  }\n  const reportTs = Number(query.reportTs || 0);\n  if (reportTs > 0) {\n    const mtimeMs = fs.statSync(sourcePath).mtimeMs;\n    if (mtimeMs > reportTs + 60000) {\n      const fmt = (ms) => new Date(ms).toISOString().slice(0, 19) + 'Z';\n      return { json: { status: 'error', httpCode: 409, message: `The page was re-captured at ${fmt(mtimeMs)}, AFTER this report was generated (${fmt(reportTs)}) \u2014 the image you reviewed is no longer the current capture. Accept from the latest report instead.` } };\n    }\n  }\n  fs.copyFileSync(sourcePath, destPath);\n  return { json: { status: 'success', httpCode: 200, slug: slug, message: 'Baseline updated' } };\n} catch (error) {\n  return { json: { status: 'error', httpCode: 500, message: `Failed to update baseline: ${error.message}` } };\n}\n"
+      },
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        400,
+        0
+      ],
+      "id": "5b538eba-f022-42a1-b4e4-7f5f2298d621",
+      "name": "Copy New Screenshot To Baseline"
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ status: $json.status, slug: $json.slug || null, message: $json.message || null }) }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Access-Control-Allow-Origin",
+                "value": "*"
+              }
+            ]
+          },
+          "responseCode": "={{ $json.httpCode || 200 }}"
+        }
+      },
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.5,
+      "position": [
+        208,
+        240
+      ],
+      "id": "631b70a3-e29c-485c-a96f-506393885a85",
+      "name": "Respond to Webhook"
+    },
+    {
+      "parameters": {
+        "jsCode": "const expectedToken = $env.UPDATE_BASELINE_TOKEN;\nconst query = $input.item.json.query;\n\nif (!query || !query.token || query.token !== expectedToken) {\n  return { json: { status: 'error', httpCode: 401, message: 'Unauthorized: invalid or missing token.' } };\n}\n\nreturn $input.item;"
+      },
+      "name": "Check Token",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        208,
+        0
+      ],
+      "id": "check-token-node-id"
+    }
+  ],
+  "connections": {
+    "Webhook": {
+      "main": [
+        [
+          {
+            "node": "Check Token",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Token": {
+      "main": [
+        [
+          {
+            "node": "Copy New Screenshot To Baseline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Copy New Screenshot To Baseline": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "availableInMCP": true,
+    "timeSavedMode": "fixed",
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "JiKmoKY9F1bSe9XW",
+    "saveDataSuccessExecution": "all"
+  },
+  "staticData": {
+    "node:Clearing New Screenshots Schedule": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "nodeGroups": [],
+  "pinData": {},
+  "versionId": "213d0994-a10b-471a-9a01-e27fb5ce5f43",
+  "activeVersionId": "213d0994-a10b-471a-9a01-e27fb5ce5f43",
+  "versionCounter": 130,
+  "triggerCount": 1,
+  "sourceWorkflowId": null,
+  "tags": [],
+  "versionMetadata": {
+    "name": "Version d0a8b490",
+    "description": ""
+  }
+}

@@ -1,0 +1,66 @@
+# -------------------------------------------------------
+# 1. INTERNAL ACCESS (Docker container to container)
+# Host: caddy (No Authentication)
+# -------------------------------------------------------
+http://caddy {
+    # Serve everything in /srv/files for internal tools like Browserless
+    root * /srv/files
+    file_server
+}
+
+# -------------------------------------------------------
+# 2. EXTERNAL ACCESS (Public Internet)
+# Host: {$DOMAIN_NAME} (Enforced Authentication)
+# -------------------------------------------------------
+{$DOMAIN_NAME} {
+    
+    # 1. Failed Screenshots (Protected)
+    handle_path /failed_screenshots/* {
+        basic_auth {
+            {$CADDY_EVIDENCE_USER} {$CADDY_EVIDENCE_PASSWORD_HASH}
+        }
+        root * /srv/files/failed_screenshots
+        file_server
+    }
+
+    # 2. Baseline Screenshots (Protected)
+    handle_path /baseline_screenshots/* {
+        basic_auth {
+            {$CADDY_EVIDENCE_USER} {$CADDY_EVIDENCE_PASSWORD_HASH}
+        }
+        root * /srv/files/baseline_screenshots
+        file_server
+    }
+
+    # 3. New Screenshots (Protected)
+    handle_path /new_screenshots/* {
+        basic_auth {
+            {$CADDY_EVIDENCE_USER} {$CADDY_EVIDENCE_PASSWORD_HASH}
+        }
+        root * /srv/files/new_screenshots
+        file_server
+    }
+
+    # 4. n8n Main App
+    handle {
+        reverse_proxy n8n:5678
+    }
+
+    # 5. Report
+    handle_path /reports/* {
+        basic_auth {
+            {$CADDY_EVIDENCE_USER} {$CADDY_EVIDENCE_PASSWORD_HASH}
+        }
+        root * /srv/files/reports
+        file_server
+    }
+}
+
+# -------------------------------------------------------
+# 3. UNRELATED SERVICES SHARING THIS CADDY
+# -------------------------------------------------------
+# One Caddy instance fronts more than this project, and the other services'
+# hostnames are not this repo's business to publish. Their site blocks live in
+# caddy_local/ (gitignored, mounted read-only at /etc/caddy/local). The glob
+# matches nothing on a fresh clone, which is fine — Caddy starts without them.
+import /etc/caddy/local/*.caddy

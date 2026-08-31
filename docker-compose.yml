@@ -1,0 +1,180 @@
+services:
+  caddy:
+    image: caddy:latest
+    restart: unless-stopped
+    ports:
+      - "80:80"   # HTTP (Redirects to HTTPS automatically)
+      - "443:443" # HTTPS
+    environment:
+      - CADDY_EVIDENCE_USER=${CADDY_EVIDENCE_USER}
+      - CADDY_EVIDENCE_PASSWORD_HASH=${CADDY_EVIDENCE_PASSWORD_HASH}
+      - DOMAIN_NAME=${DOMAIN_NAME}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile
+      - ./caddy_local:/etc/caddy/local:ro
+      - caddy_data:/data
+      - caddy_config:/config
+      - ./local_files:/srv/files
+    networks:
+      - default
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
+  postgres:
+    image: postgres:16-alpine
+    container_name: postgres-visual-tester
+    restart: unless-stopped
+    environment:
+      - POSTGRES_USER=${POSTGRES_USER}
+      - POSTGRES_PASSWORD=${POSTGRES_PASSWORD}
+      - POSTGRES_DB=${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    networks:
+      - default
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # 1. n8n - The Logic Engine
+  n8n:
+    build: .
+    container_name: n8n-visual-tester
+    user: "${UID}:${GID}"
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:5678:5678"
+    dns:
+      - 8.8.8.8
+      - 1.1.1.1
+    depends_on:
+      postgres:
+        condition: service_healthy
+    environment:
+      - HOME=/home/node
+      - WEBHOOK_URL=${WEBHOOK_URL}
+      - UPDATE_BASELINE_TOKEN=${UPDATE_BASELINE_TOKEN}
+      - SLACK_WEBHOOK=${SLACK_WEBHOOK}
+      - TARGET_WEBSITE_URL=${TARGET_WEBSITE_URL}
+      - AI_API_KEY=${AI_API_KEY}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      - N8N_ENFORCE_SETTINGS_FILE_PERMISSIONS=true
+      - N8N_TRUST_PROXY=true
+      - N8N_PROXY_HOPS=1
+      - N8N_SECURE_COOKIE=true
+      - N8N_GIT_NODE_DISABLE_BARE_REPOS=true
+      - NODE_OPTIONS=--dns-result-order=ipv4first
+      - GENERIC_TIMEZONE=${TIMEZONE}
+      - N8N_BASIC_AUTH_ACTIVE=true
+      - N8N_BASIC_AUTH_USER=${N8N_BASIC_AUTH_USER}
+      - N8N_BASIC_AUTH_PASSWORD=${N8N_BASIC_AUTH_PASSWORD}
+      - N8N_LOG_OUTPUT=console
+      - EXECUTIONS_TIMEOUT_MAX=14400
+      - N8N_RUNNERS_TASK_TIMEOUT=600
+      - N8N_RUNNERS_MAX_OLD_SPACE_SIZE=4096
+      - NODE_FUNCTION_ALLOW_BUILTIN=fs
+      - NODE_FUNCTION_ALLOW_EXTERNAL=pngjs,pixelmatch,sharp
+      - NODES_EXCLUDE=[]
+      # Environment variables from .env
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      - N8N_BLOCK_FILE_ACCESS_TO_N8N_FILES=false
+      - N8N_RESTRICT_FILE_ACCESS_TO=/files
+      - CADDY_EVIDENCE_USER=${CADDY_EVIDENCE_USER}
+      - CADDY_EVIDENCE_PASSWORD=${CADDY_EVIDENCE_PASSWORD}
+      
+      # Database Settings
+      - DB_TYPE=${DB_TYPE}
+      - DB_POSTGRESDB_DATABASE=${DB_POSTGRESDB_DATABASE}
+      - DB_POSTGRESDB_HOST=${DB_POSTGRESDB_HOST}
+      - DB_POSTGRESDB_PORT=${DB_POSTGRESDB_PORT}
+      - DB_POSTGRESDB_USER=${DB_POSTGRESDB_USER}
+      - DB_POSTGRESDB_PASSWORD=${DB_POSTGRESDB_PASSWORD}
+
+      # 1. Pruning (Cleanup) Settings
+      - EXECUTIONS_DATA_PRUNE=true
+      - EXECUTIONS_DATA_MAX_AGE=48            # Keep data for 48 hours only
+
+      # 2. Saving Settings
+      - EXECUTIONS_DATA_SAVE_ON_ERROR=all     # Save everything when it fails (for debugging)
+      - EXECUTIONS_DATA_SAVE_ON_SUCCESS=none  # Save NOTHING when it passes
+      - EXECUTIONS_DATA_SAVE_ON_PROGRESS=false # Was true — per-node progress saves were stringifying entire in-flight state (including base64) and blowing V8's 512MB string cap
+
+      # 3. Binary Data — keep item binary on disk, not inline on item.json. With
+      #    SAVE_ON_ERROR=all a failed run would otherwise serialize every retained
+      #    screenshot buffer into ONE string to persist, risking the ~512MB single-string
+      #    cap. Filesystem mode leaves KB-sized refs; reaped by EXECUTIONS_DATA_MAX_AGE.
+      - N8N_DEFAULT_BINARY_DATA_MODE=filesystem
+      # The mobile homepage full-grid capture at deviceScaleFactor:3 on a ~20k-px page
+      # is ~50MB; the default 16MB cap made the httpRequest node reject it, so that
+      # baseline silently failed. Raise it (binary mode keeps these on disk, not in-memory).
+      - N8N_PAYLOAD_SIZE_MAX=128
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "30m"
+        max-file: "3"
+    volumes:
+      - ./n8n_data/config:/home/node/.n8n
+      - ./n8n_data/cache:/home/node/.cache
+      - ./local_files:/files
+    # THIS IS THE BRIDGE TO YOUR MAC
+    extra_hosts:
+      - "host.docker.internal:host-gateway" 
+
+  # 2. Browserless - The Headless Browser
+  #
+  # The `chrome` image, NOT `chromium` (2026-08-30). The chromium image is the
+  # codec-free open-source build: canPlayType('video/mp4; codecs="avc1.42E01E"')
+  # answers "no", so every H.264 <video> on the target site died with
+  # MEDIA_ERR_SRC_NOT_SUPPORTED and the site's player painted "Sorry, we couldn't
+  # play the video." over each post -- a defect no real visitor ever sees, reported
+  # as a FAIL on every profile page. Same browserless version, same Chrome 141;
+  # only the binary's codecs differ.
+  #
+  # PINNED, and the two must move together: the chrome image serves its function
+  # endpoint at /chrome/function (chromium served it unprefixed at /function), so
+  # the capture nodes' URL is tied to this image. `latest` is already 2.56.x, which
+  # would also drag in nine months of server changes under the viewport ladder that
+  # was validated against 2.38.2.
+  browserless:
+    image: ghcr.io/browserless/chrome:v2.38.2
+    container_name: browserless-visual-tester
+    ports:
+      - "127.0.0.1:3000:3000"
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+    environment:
+      # limit concurrency to save RAM
+      - MAX_CONCURRENT_SESSIONS=10
+      # Raised from 60000: capture now scrolls the full page and waits for lazy
+      # images/videos before screenshotting, which needs more headroom on tall pages.
+      # 2026-07-16: raised 90000->180000. The mobile home full-grid capture has a ~56s
+      # floor (18s PNG encode of the 1179x63k px page + 18s to stream the 53MB response),
+      # so a cold/slow run could cross the old 90s cap -> intermittent "Screenshot crashed
+      # (Timeout or Memory)". Note: this is the DEFAULT; the capture nodes also request
+      # ?timeout=180000 per call (proven to override this global), so the fix holds even if
+      # this value is reverted. Applying this env value needs a browserless recreate.
+      - TIMEOUT=180000
+    # Raised 2gb->4gb for the fan-out: K=4-5 concurrent tall full-page renders share
+    # Chrome's /dev/shm; the VPS has 16GB so this is comfortable headroom.
+    shm_size: '4gb'
+    restart: unless-stopped
+    volumes:
+      - ./fonts:/usr/share/fonts/truetype/custom
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  default:
+    driver: bridge
