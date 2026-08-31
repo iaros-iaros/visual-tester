@@ -1,4 +1,4 @@
-<img width="2140" height="510" alt="desktop_workflow" src="https://github.com/user-attachments/assets/0fdcd17f-bed6-4234-b66d-8975d6489b16" />
+<img width="2283" height="744" alt="UI" src="https://github.com/user-attachments/assets/ad3b773c-b85a-4cd8-9595-90c5cf46e6a1" />
 
 # Visual Tester
 
