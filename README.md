@@ -151,10 +151,12 @@ Filenames say what a file is for; nothing is named after the incident that produ
 -   `export_live_workflows.sh` — pulls the live workflows out of the container into the
     `*_live.json` snapshots. `show_db_sizes.sh` prints the largest Postgres tables.
 
-**Rolling back a deployment** — `*_live.json` is committed after every deploy, so git
-history *is* the rollback chain: `git log -- desktop_live.json` lists one revision per
-deployment, and `git show <commit>:desktop_live.json > rollback.json` gives you that
-exact live state to import.
+**Rolling back a deployment** — n8n keeps its own version history per workflow and every
+publish lands in it, so a rollback does not depend on git: list the versions and restore
+one, from the n8n UI or over the API (`get_workflow_history`, `restore_workflow_version`).
+`*_live.json` is still committed after every deploy, so the repo always records what is
+running — but the repo's history is not a revision-per-deployment chain, so do not go
+looking for one there.
 
 ## Keeping the target site out of the repo
 

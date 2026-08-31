@@ -1,5 +1,5 @@
 {
-  "updatedAt": "2026-08-11T16:12:38.634Z",
+  "updatedAt": "2026-08-31T11:12:55.738Z",
   "createdAt": "2025-12-12T20:30:20.147Z",
   "id": "0t8Gg1u7FGx8X8vF",
   "name": "Desktop",
@@ -36,7 +36,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [
-        -3488,
+        -3552,
         304
       ],
       "id": "54add8cd-08dd-4dca-9bcc-a987212c24d1",
@@ -198,7 +198,7 @@
       "type": "n8n-nodes-base.httpRequest",
       "typeVersion": 4.3,
       "position": [
-        -3488,
+        -3552,
         512
       ],
       "id": "777f05ea-d062-49e6-a9d3-9f524a1c8e74",
@@ -234,7 +234,7 @@
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
       "position": [
-        -3072,
+        -3136,
         496
       ],
       "id": "ac72a5f9-bb36-470a-ba7c-d7e05d06aa0d",
@@ -250,7 +250,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -2880,
+        -2944,
         496
       ],
       "id": "18929e31-db93-41d9-82fd-2880094d6bef",
@@ -264,7 +264,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -2016,
+        -2192,
         272
       ],
       "id": "bfc9b71b-2fe0-402c-ae56-f64bf314ca20",
@@ -291,8 +291,8 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -1504,
-        32
+        -1728,
+        64
       ],
       "id": "e0c0b471-430e-4a40-a637-eaa7ed1e997b",
       "name": "Prepare Failure HTML",
@@ -309,8 +309,8 @@
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
       "position": [
-        -1280,
-        32
+        -1504,
+        64
       ],
       "id": "84cc5200-6bbf-42be-ba42-50c576f7d2a9",
       "name": "Save Failed",
@@ -355,7 +355,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        -1792,
+        -2000,
         272
       ],
       "id": "71bd1f99-d4fe-4a66-a1bf-f48ea4cbd7b3",
@@ -389,7 +389,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -2816,
+        -2880,
         288
       ],
       "id": "28ccdd60-c9c4-45f9-82c1-ac675c6a74d8",
@@ -424,7 +424,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.2,
       "position": [
-        -2592,
+        -2640,
         48
       ],
       "id": "06c7c679-087a-4d61-830b-7a6c999d1e4e",
@@ -440,7 +440,7 @@
       "type": "n8n-nodes-base.readWriteFile",
       "typeVersion": 1,
       "position": [
-        -3040,
+        -3104,
         288
       ],
       "id": "27b1c4f6-21fc-4222-9dc9-b979abbad51f",
@@ -487,7 +487,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -2368,
+        -2432,
         288
       ],
       "id": "73871a9e-e94e-4e9c-ac38-d62c391c3414",
@@ -516,7 +516,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -2912,
+        -2976,
         704
       ],
       "id": "a6dffc76-9b43-4b61-aa06-9f8d63671bf3",
@@ -529,7 +529,7 @@
       "type": "n8n-nodes-base.code",
       "typeVersion": 2,
       "position": [
-        -2016,
+        -2176,
         480
       ],
       "id": "7e17a5b4-e4ba-4b0c-85d4-d3ac6c22f469",
@@ -574,7 +574,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [
-        -3280,
+        -3344,
         512
       ],
       "id": "0c5d4e00-0866-4a6b-a0b7-7908899eeafe",
@@ -618,7 +618,7 @@
       "type": "n8n-nodes-base.if",
       "typeVersion": 2.3,
       "position": [
-        -3280,
+        -3344,
         304
       ],
       "id": "4e4fd93a-45f0-47ca-9254-765895319aa8",
@@ -999,14 +999,14 @@
   },
   "nodeGroups": [],
   "pinData": {},
-  "versionId": "f94c0ef2-f006-43f4-91a3-7297677b2830",
-  "activeVersionId": "f94c0ef2-f006-43f4-91a3-7297677b2830",
-  "versionCounter": 1037,
+  "versionId": "2a42559b-ffc1-491a-9252-d761974ac34a",
+  "activeVersionId": "2a42559b-ffc1-491a-9252-d761974ac34a",
+  "versionCounter": 1043,
   "triggerCount": 1,
   "sourceWorkflowId": null,
   "tags": [],
   "versionMetadata": {
-    "name": null,
-    "description": null
+    "name": "Version 2a42559b",
+    "description": ""
   }
 }
