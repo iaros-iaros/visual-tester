@@ -98,7 +98,6 @@ for (const deviceType of reportGroups){
       var ov, stack, row, labels, pane, pct, links, title, msg;
       var zoom = 1, base = 0;
       var SEAM = 3;      // px, the divider between the two halves
-      var PAD = 24;      // .vt-pane horizontal padding
       var MAXFIT = 2;    // never auto-upscale past 2x on open
 
       function build() {
@@ -107,9 +106,11 @@ for (const deviceType of reportGroups){
         ov.innerHTML =
           '<div class="vt-bar">' +
             '<span class="vt-title"></span>' +
-            '<button type="button" class="vt-b" data-z="out" title="Zoom out">&minus;</button>' +
-            '<span class="vt-pct"></span>' +
-            '<button type="button" class="vt-b" data-z="in" title="Zoom in">+</button>' +
+            '<span class="vt-grp">' +
+              '<button type="button" class="vt-b" data-z="out" title="Zoom out">&minus;</button>' +
+              '<span class="vt-pct"></span>' +
+              '<button type="button" class="vt-b" data-z="in" title="Zoom in">+</button>' +
+            '</span>' +
             '<button type="button" class="vt-b" data-z="fit" title="Fit to width">Fit</button>' +
             '<span class="vt-sp"></span>' +
             '<span class="vt-links"></span>' +
@@ -133,13 +134,20 @@ for (const deviceType of reportGroups){
         window.addEventListener('resize', apply);
       }
 
-      function fitZoom() { return Math.max(0.02, (pane.clientWidth - PAD) / base); }
+      // Read the pane's padding rather than hardcoding it: the phone breakpoint
+      // narrows it, and fit-to-width has to agree with whatever the CSS says.
+      function paneW() {
+        var cs = getComputedStyle(pane);
+        return pane.clientWidth - parseFloat(cs.paddingLeft) - parseFloat(cs.paddingRight);
+      }
+
+      function fitZoom() { return Math.max(0.02, paneW() / base); }
 
       function apply() {
         if (!base) return;
         var w = Math.max(40, Math.round(base * zoom));
         stack.style.width = w + 'px';
-        stack.style.margin = w <= pane.clientWidth - PAD ? '0 auto' : '0';
+        stack.style.margin = w <= paneW() ? '0 auto' : '0';
         pct.textContent = Math.round(zoom * 100) + '%';
       }
 
@@ -186,7 +194,11 @@ for (const deviceType of reportGroups){
         srcs.forEach(function (src, i) {
           var a = document.createElement('a');
           a.href = src; a.target = '_blank'; a.rel = 'noopener';
-          a.textContent = 'original: ' + names[i].split(' ')[0].toLowerCase() + ' \u2197';
+          var lx = document.createElement('span');
+          lx.className = 'vt-lx';
+          lx.textContent = 'original: ';
+          a.appendChild(lx);
+          a.appendChild(document.createTextNode(names[i].split(' ')[0].toLowerCase() + ' \u2197'));
           links.appendChild(a);
         });
 
@@ -309,24 +321,29 @@ for (const deviceType of reportGroups){
   }
   
   // 3. Generate HTML
-  const maxRows = Math.max(passUrls.length, failUrls.length, newUrls.length, skippedUrls.length);
-  
   let html = `
   <!DOCTYPE html>
   <html>
     <head>
-      <meta charset="UTF-8"><title>${deviceType.toUpperCase()} Report</title>
+      <meta charset="UTF-8">
+      <meta name="viewport" content="width=device-width, initial-scale=1">
+      <title>${deviceType.toUpperCase()} Report</title>
       ${scriptBlock}
       ${viewerBlock}
       <style>
         body { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; background: #f4f6f8; padding: 20px; margin: 0; }
-        table { width: 100%; border-collapse: separate; border-spacing: 0; background: white; }
-        th { border: 1px solid #e1e4e8; padding: 12px; background: #f6f8fa; text-align: left; }
-        td { border: 1px solid #e1e4e8; padding: 15px; background: #fff; vertical-align: top; }
-        .wrapper { border: 1px solid #d1d5da; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .wrapper { display: flex; align-items: stretch; background: #fff;
+                   border: 1px solid #d1d5da; border-radius: 6px; overflow: hidden; box-shadow: 0 1px 3px rgba(0,0,0,0.05); }
+        .col { flex: 1 1 0; min-width: 0; display: flex; flex-direction: column; }
+        .col + .col { border-left: 1px solid #e1e4e8; }
+        .colhead { margin: 0; padding: 12px; background: #f6f8fa; font-size: 16px; border-bottom: 2px solid; }
+        .cell { padding: 15px; border-bottom: 1px solid #e1e4e8; }
+        .cell:last-child { border-bottom: 0; }
+        .col-fail .cell { background: #fff5f5; }
         h2 { margin-top: 0; color: #24292e; }
         a { color: #0366d6; text-decoration: none; }
         a:hover { text-decoration: underline; }
+        .cell a { overflow-wrap: anywhere; }
         button[data-accept-slug]:hover { background-color: #1b5e20 !important; }
 
         /* on-demand screenshot viewer */
@@ -336,14 +353,29 @@ for (const deviceType of reportGroups){
         .vt-open-fail { background:#cb2431; }
         .vt-open-fail:hover { background:#a11b26; }
         .vt-ov { display:none; position:fixed; top:0; right:0; bottom:0; left:0; z-index:9999; background:rgba(15,17,20,0.93); flex-direction:column; }
-        .vt-bar { display:flex; align-items:center; gap:8px; padding:8px 12px; background:#1c2026; color:#e6e6e6; font-size:12px; flex:0 0 auto; }
+        .vt-bar { display:flex; flex-wrap:wrap; align-items:center; gap:10px; padding:10px 14px; background:#1c2026; color:#e6e6e6;
+                  font-size:13px; flex:0 0 auto; border-bottom:1px solid #333d4a; }
         .vt-bar .vt-title { font-weight:600; max-width:34%; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
         .vt-bar .vt-sp { flex:1 1 auto; }
-        .vt-bar .vt-links a { color:#79b8ff; margin-left:12px; }
-        .vt-b { background:#2b323b; color:#e6e6e6; border:1px solid #3d454f; border-radius:4px; padding:4px 9px; font:inherit; font-size:12px; cursor:pointer; }
-        .vt-b:hover { background:#39424d; }
-        .vt-pct { min-width:46px; text-align:center; color:#9aa4b0; }
-        .vt-pane { flex:1 1 auto; overflow:auto; padding:0 12px 12px; }
+        .vt-bar .vt-links a { color:#8cc2ff; margin-left:14px; }
+        /* The controls used to be #2b323b on a #1c2026 bar -- a 1.3:1 surface
+           contrast that read as "disabled" rather than "button". Raised to a
+           surface that is plainly lighter than the bar, with a border and label
+           to match, and the zoom trio bound into one segmented control. */
+        .vt-b { background:#3b4552; color:#f4f7fa; border:1px solid #5a6675; border-radius:6px; padding:6px 13px;
+                font:inherit; font-size:13px; font-weight:600; line-height:1.4; cursor:pointer; }
+        .vt-b:hover { background:#4c596a; border-color:#748294; }
+        .vt-b:active { transform:translateY(1px); }
+        .vt-b:focus-visible { outline:2px solid #8cc2ff; outline-offset:2px; }
+        .vt-b[data-vt-close]:hover { background:#cb2431; border-color:#e0505c; color:#fff; }
+        .vt-grp { display:flex; align-items:stretch; background:#3b4552; border:1px solid #5a6675; border-radius:6px; overflow:hidden; }
+        .vt-grp .vt-b { background:none; border:0; border-radius:0; }
+        .vt-grp .vt-b:hover { background:#4c596a; }
+        .vt-grp .vt-b[data-z="out"], .vt-grp .vt-b[data-z="in"] { font-size:17px; padding:2px 14px; }
+        .vt-pct { display:flex; align-items:center; justify-content:center; min-width:52px; padding:0 4px;
+                  border-left:1px solid #5a6675; border-right:1px solid #5a6675;
+                  color:#e6ebf1; font-weight:600; font-variant-numeric:tabular-nums; }
+        .vt-pane { flex:1 1 auto; overflow:auto; -webkit-overflow-scrolling:touch; padding:0 12px 12px; }
         .vt-labels { display:flex; position:sticky; top:0; z-index:1; }
         .vt-labels span { flex:1 1 0; min-width:0; padding:5px 8px; background:#2b323b; color:#e6e6e6; font-size:12px; font-weight:600; text-align:center; }
         .vt-labels span + span { border-left:3px solid #cb2431; }
@@ -351,6 +383,48 @@ for (const deviceType of reportGroups){
         .vt-row img { flex:1 1 0; min-width:0; height:auto; display:block; background:#fff; }
         .vt-row img + img { border-left:3px solid #cb2431; }
         .vt-msg { padding:24px; color:#bbb; font-size:13px; text-align:center; }
+
+        /* Narrow windows and tablets. The bar fits on one line down to ~840px
+           (font-dependent); below that it has to wrap, and the tidy break is the
+           links onto a line of their own -- otherwise the spacer fills line 1 and
+           Close is orphaned at the left of line 2. Only .vt-links needs an explicit
+           order: everything else defaults to 0, so ordering it 1 alone moves it
+           past Close. Breakpoint set conservatively above the measured threshold,
+           which shifts with the platform's font metrics. */
+        @media (max-width: 880px) {
+          .vt-bar .vt-links { order:1; flex:1 0 100%; }
+          .vt-bar .vt-links a { margin-left:0; margin-right:18px; }
+        }
+
+        /* Phones (2026-09-01). The report shipped without a viewport meta, so a
+           phone laid the whole page out at 980px and scaled it to ~0.40 -- the
+           viewer bar's 60x26 Close button reached the screen as 24x10 physical px,
+           too small to see, let alone hit. The meta tag above fixes the scale;
+           these rules give the bar somewhere to go at a real phone width. It wraps
+           into three lines -- page title, the zoom cluster with Close pushed right,
+           then the original-image links -- and the controls grow to a tappable
+           size. */
+        @media (max-width: 760px) {
+          body { padding: 12px; }
+          h2 { font-size: 20px; }
+          .wrapper { flex-direction: column; }
+          .col + .col { border-left: 0; }
+          .col-fail { order: -1; }
+          .col-skip { order: 1; }
+          .col-pass, .col-skip { border-top: 1px solid #d1d5da; }
+          .colhead { padding: 10px 12px; }
+          .cell { padding: 12px; }
+          .vt-bar { gap:6px 8px; padding:8px 10px; }
+          .vt-bar .vt-title { flex:1 0 100%; max-width:100%; white-space:normal; overflow-wrap:anywhere;
+                              display:-webkit-box; -webkit-line-clamp:2; -webkit-box-orient:vertical; }
+          .vt-bar .vt-links a { display:inline-block; padding:3px 0; font-size:13px; }
+          .vt-bar .vt-links .vt-lx { display:none; }   /* "original: baseline" -> "baseline" */
+          .vt-b { min-height:42px; padding:8px 16px; font-size:14px; }
+          .vt-grp .vt-b[data-z="out"], .vt-grp .vt-b[data-z="in"] { font-size:19px; padding:2px 18px; }
+          .vt-pct { min-width:58px; font-size:14px; }
+          .vt-pane { padding:0 8px 8px; }
+          .vt-labels span, .vt-msg { font-size:13px; }
+        }
       </style>
     </head>
     <body>
@@ -358,35 +432,28 @@ for (const deviceType of reportGroups){
       <p><strong>Date:</strong> ${date.toLocaleString()}</p>
       
       <div class="wrapper">
-        <table cellpadding="0" cellspacing="0">
-          <thead>
-              <tr>
-              <th style="width: 33%; color: #28a745; border-bottom: 2px solid #28a745;">✅ PASS (${passUrls.length})</th>
-              <th style="width: 33%; color: #cb2431; border-bottom: 2px solid #cb2431;">❌ FAIL (${failUrls.length})</th>
-              <th style="width: 33%; color: #6a737d; border-bottom: 2px solid #6a737d;">⌛ SKIP (${skippedUrls.length})</th>
-              </tr>
-          </thead>
-          <tbody>
   `;
-  
-  // 4. Add Rows
-  for (let i = 0; i < maxRows; i++) {
-    const passCell = passUrls[i] || "";
-    const failCell = failUrls[i] || "";
-    const skipCell = skippedUrls[i] || "";
-    
-    html += `
-      <tr>
-          <td>${passCell}</td>
-          <td style="background-color: ${failCell ? '#fff5f5' : '#fff'};">${failCell}</td>
-          <td>${skipCell}</td>
-      </tr>`;
-  }
-  
+
+  // 4. Add the three status columns
+  //
+  // These used to be the three cells of one table row, padded out to maxRows with
+  // empty <td>s. That paired unrelated pages purely by index, and on a phone it
+  // left each column a third of the screen: with the viewport meta in place the
+  // FAIL reason wrapped at ~16 characters and the mobile report ran 19,000px.
+  // Independent columns give the phone the full width, and FAIL is ordered first
+  // there since that is the only column you act on.
+  const column = (cls, label, colour, entries) => `
+        <section class="col col-${cls}">
+          <h3 class="colhead" style="color:${colour}; border-bottom-color:${colour};">${label} (${entries.length})</h3>
+          ${entries.map(e => `<div class="cell">${e}</div>`).join('')}
+        </section>`;
+
+  html += column('pass', '✅ PASS', '#28a745', passUrls)
+        + column('fail', '❌ FAIL', '#cb2431', failUrls)
+        + column('skip', '⌛ SKIP', '#6a737d', skippedUrls);
+
   // 5. Close Tags
   html += `
-          </tbody>
-        </table>
       </div>
   `;
   
