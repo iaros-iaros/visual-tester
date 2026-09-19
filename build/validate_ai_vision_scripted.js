@@ -66,11 +66,11 @@ const PASS_ANSWER = {
   box: { ymin: 0, xmin: 0, ymax: 0, xmax: 0 }
 };
 
-const calls = { mainFail: 0, retry: 0, qwenLocal: 0, qwenSweep: 0, qwenSweepErrors: 0, geminiProbe: 0 };
+const calls = { mainFail: 0, retry: 0, fbLocal: 0, fbSweep: 0, fbSweepErrors: 0, geminiProbe: 0 };
 let retryFeedback = null;
 
 const geminiResponse = (obj) => ({ candidates: [{ content: { parts: [{ text: JSON.stringify(obj) }] } }], modelVersion: 'stub-gemini' });
-const qwenResponse = (obj) => ({ choices: [{ message: { content: JSON.stringify(obj) } }], model: 'stub-qwen' });
+const orResponse = (obj) => ({ choices: [{ message: { content: JSON.stringify(obj) } }], model: 'stub-fallback' });
 
 const helpers = {
   httpRequest: async (opts) => {
@@ -80,7 +80,7 @@ const helpers = {
       if (isProbe) {
         calls.geminiProbe++;
         // In 'partial' the Gemini prober is down too — otherwise it would
-        // rescue every erroring Qwen window and coverage would stay full.
+        // rescue every erroring fallback window and coverage would stay full.
         if (SCENARIO === 'partial') throw new Error('stub gemini prober down');
         // Gemini prober: confirms visibility in 'found', denies otherwise.
         return geminiResponse({ claimed_element_visible: SCENARIO === 'found', what_is_there: 'stub gemini prober answer' });
@@ -100,15 +100,15 @@ const helpers = {
       const question = (Array.isArray(userContent) && userContent[0] && userContent[0].text) || '';
       const isSweep = question.includes('ONE SECTION of');
       if (!isSweep) {
-        calls.qwenLocal++;
-        return qwenResponse({ claimed_element_visible: false, what_is_there: 'More / Terms & Policies footer sections' });
+        calls.fbLocal++;
+        return orResponse({ claimed_element_visible: false, what_is_there: 'More / Terms & Policies footer sections' });
       }
-      calls.qwenSweep++;
-      if (SCENARIO === 'partial' && calls.qwenSweep > 3) {
-        calls.qwenSweepErrors++;
+      calls.fbSweep++;
+      if (SCENARIO === 'partial' && calls.fbSweep > 3) {
+        calls.fbSweepErrors++;
         throw new Error('stub transient probe failure');
       }
-      return qwenResponse({
+      return orResponse({
         claimed_element_visible: SCENARIO === 'found',
         what_is_there: SCENARIO === 'found' ? 'the four brand-column footer links' : 'grid tiles / text sections'
       });
@@ -145,13 +145,13 @@ fn(require, mock$, $input, $env, helpers, fastSetTimeout).then((r) => {
   if (SCENARIO === 'veto') {
     expect('tailIdentity computed', !!out.tailIdentity);
     expect('bottom-identity veto in trail', trail.includes('bottom-identity veto'));
-    expect('NO local/sweep probes ran', calls.qwenLocal === 0 && calls.qwenSweep === 0 && calls.geminiProbe === 0);
+    expect('NO local/sweep probes ran', calls.fbLocal === 0 && calls.fbSweep === 0 && calls.geminiProbe === 0);
     expect('corrective retry received bottom-identity feedback', calls.retry === 1 && /bottom-identity/.test(retryFeedback || ''));
     expect('final status PASS via retry', out.ai.status === 'PASS' && out.reasonSource === 'model-retry');
   }
   if (SCENARIO === 'removal') {
     expect('tailIdentity NOT declared (bottoms differ)', !out.tailIdentity);
-    expect('local probe ran', calls.qwenLocal === 1);
+    expect('local probe ran', calls.fbLocal === 1);
     expect('sweep ran with full coverage and verified the claim', /full-page new sweep \(\d+ windows, full coverage\): element not found — claim verified/.test(trail));
     expect('no corrective retry (claim upheld)', calls.retry === 0);
     expect('final status FAIL with model reason intact', out.ai.status === 'FAIL' && out.reasonSource === 'model' && /missing from the bottom/.test(out.ai.reason));
@@ -161,16 +161,16 @@ fn(require, mock$, $input, $env, helpers, fastSetTimeout).then((r) => {
     const mi = trail.match(/sweep INCOMPLETE \((\d+)\/(\d+) windows probed\)/);
     expect('sweep INCOMPLETE in trail', !!mi);
     expect('claim NOT accepted on trust', trail.includes('claim NOT accepted on trust'));
-    // round 0 alone costs probed + 2*(failed) qwen calls; the retry round adds
+    // round 0 alone costs probed + 2*(failed) fallback calls; the retry round adds
     // 2*failed more — total strictly above the single-round count proves the
     // failed windows got their second attempt.
-    expect('erroring windows were retried once', !!mi && calls.qwenSweep > Number(mi[1]) + 2 * (Number(mi[2]) - Number(mi[1])));
+    expect('erroring windows were retried once', !!mi && calls.fbSweep > Number(mi[1]) + 2 * (Number(mi[2]) - Number(mi[1])));
     expect('verification-unavailable veto -> retry -> PASS', out.ai.status === 'PASS' && out.reasonSource === 'model-retry' && /verification-unavailable/.test(retryFeedback || ''));
   }
   if (SCENARIO === 'regionpin') {
     expect('tailIdentity computed', !!out.tailIdentity);
     expect('bottom-identity veto did NOT fire (regionNo is authoritative)', !trail.includes('bottom-identity veto'));
-    expect('claim fell through to probes', calls.qwenLocal === 1 && calls.qwenSweep > 0);
+    expect('claim fell through to probes', calls.fbLocal === 1 && calls.fbSweep > 0);
     expect('sweep verified (stub probes all not-visible) -> FAIL ships', out.ai.status === 'FAIL' && out.reasonSource === 'model');
   }
   if (SCENARIO === 'found') {

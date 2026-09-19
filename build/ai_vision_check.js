@@ -47,14 +47,23 @@ const API_KEY = $env.AI_API_KEY;
 // retired under you (gemini-3-pro-preview 404s while still listed). Drift is handled by
 // observability instead: modelVersion is persisted on every result and shown in reports.
 const PRIMARY_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-latest:generateContent?key=${API_KEY}`;
-// Fallback is Qwen via OpenRouter, NOT gemini-flash-latest: on the 2026-07-27 benchmark
-// flash blind-PASSed a real regression 3/3 (silently flips true FAILs on 503 days), while
-// Qwen never fabricated on the same battery. Qwen also serves the existence probe (cheap,
-// deterministic). If OPENROUTER_API_KEY is absent both fallback and probe self-disable.
+// Fallback is DeepSeek Flash via OpenRouter (2026-09-19 swap, benchmarked on an
+// 18-pair truth battery vs the previous Qwen3.5 fallback: equal verdict
+// quality, zero fabricated FAIL stories vs one for Qwen, ~2x faster, ~6.6x
+// cheaper, 6/6 on the existence probes). NOT gemini-flash-latest: on the
+// 2026-07-27 benchmark flash blind-PASSed a real regression 3/3 (silently
+// flips true FAILs on 503 days). Alias kept ON PURPOSE like gemini-pro-latest;
+// the served model is persisted per result. Provider is PINNED: the account's
+// OpenRouter data policy already excludes the official 'deepseek' endpoint
+// (trains on paid inputs), and the cheapest route (Relace fp4) does not
+// support response_format — DeepInfra (fp8) supports it and pins serving, same
+// philosophy as the old parasail pin. The fallback also serves the existence
+// probe (cheap, deterministic). If OPENROUTER_API_KEY is absent both fallback
+// and probe self-disable.
 const OR_KEY = $env.OPENROUTER_API_KEY || null;
 const OR_URL = 'https://openrouter.ai/api/v1/chat/completions';
-const QWEN_MODEL = 'qwen/qwen3.5-397b-a17b';
-const QWEN_PROVIDER = { only: ['parasail'] };
+const FALLBACK_MODEL = '~deepseek/deepseek-flash-latest';
+const FALLBACK_PROVIDER = { only: ['deepinfra'] };
 
 const GEMINI_PROMPT = "You are a Senior QA Engineer. Compare the TWO images provided. Image 1 is the Baseline. Image 2 is the New Version.\n\n## THE GOLDEN RULE (CONSERVATIVE MODE)\n**Default to PASS.** Only fail if the difference is OBVIOUS and breaks the user experience. If you have to \"squint\" or zoom in to see it, it is NOT a bug.\n\n## 1. IGNORE THESE (NOISE FILTER)\n- **Tiny Shifts:** Elements moving 1-5 pixels. (Common in browser rendering).\n- **Text Thickness:** Fonts looking slightly bolder/thinner (Anti-aliasing).\n- **Color Vibrance:** Slight changes in hue/brightness (Compression artifacts).\n- **Dynamic Data:** Timestamps, dates, view counts, random IDs.\n- **Icons:** Slight pixelation differences in icons.\n- **Rotating Content Grids:** Content/poster grids rotate their items between visits. Different, reordered, or additional grid thumbnails/rows are routine rotation -> PASS, unless the grid layout itself is broken (overlapping tiles, gaps, broken images).\n- **Moved/Reordered Content:** An element is missing ONLY if it is absent from the ENTIRE new page. A card, tile, banner, or CTA that appears at a DIFFERENT position (reordered within a grid, moved up or down the page) is NOT missing and NOT added -> PASS. Grid CTA/promo cards routinely move between grid positions during rotation.\n\n## 2. FLAG THESE (REAL BUGS)\n- **Missing Content:** A button, image, or paragraph exists on Left but is GONE on Right. Before flagging, verify at the same location in Image 2 (use the crops) that it is truly gone — an element that is restyled, moved, or lost an icon/dot is NOT missing. If the element might simply sit at a different position, scan the WHOLE of Image 2 before claiming removal.\n- **Added Content:** A paragraph, section, banner, or element appears on Right that did not exist on Left. Before flagging, verify at the same location in Image 1 that it is truly absent there — an element that exists in both but changed style (e.g. lost or gained an icon/dot) is NOT new. Report REAL additions — do NOT excuse them as an 'intentional update'; a human reviews the report and accepts intentional changes there.\n- **Layout Shifts:** If an unexpected element appears and pushes everything else down, identify the NEW element as the bug. Do NOT highlight the content that merely shifted below it.\n- **Broken Layout:** Elements overlapping, crushed, or completely misaligned.\n- **Logo/Brand Damage:** The site logo is an EXCEPTION to the restyling tolerance: a graphic, icon, or stylized character that is part of the logo disappearing, failing to load, or being replaced by plain text IS a real bug — report it as FAIL.\n\n## THINKING PROCESS (Must be in 'thought_process'):\n1. **Scan:** Look at the image globally.\n2. **List Candidates:** Identify potential differences.\n3. **The Filter:** For each candidate, ask: \"Does this prevent a user from using the site?\" or \"Is this just a rendering quirk?\"\n   - If it's a quirk -> DISCARD.\n   - If it's a real bug -> KEEP.\n4. **Verdict:** If NO candidates remain after filtering, the status is PASS.\n\n## OUTPUT RULES\n- If PASS: 'reason' must be 'None', 'box' must be all 0, 'defect_region' must be 0, 'evidence' must be 'None', and present_in_baseline/present_in_new must both be true.\n- If FAIL: 'reason' must describe the exact defect. 'evidence' must state what is VISIBLY at the defect location in EACH image (look again at both before writing it). 'present_in_baseline'/'present_in_new' state whether the affected element is visible in each image. 'defect_region' MUST be the NUMBER of the pixel-diff region (from the numbered PIXEL-DIFF GROUND TRUTH list, when present) that contains the root defect — this is the PRIMARY location signal and drives where the report highlights the defect; re-read the region list and pick the one whose area contains the defect you described. Use 0 ONLY if no region list was provided or the defect lies outside every listed region (e.g. in the uncompared bottom area when one is noted). 'box' MUST be an object: {\"ymin\": ..., \"xmin\": ..., \"ymax\": ..., \"xmax\": ...} wrapping ONLY the root defect relative to Image 2 (New Version) using native 0-1000 scale.";
 
@@ -392,6 +401,43 @@ else try {
 } catch (e) { alignSkipReason = `error: ${String(e.message).slice(0, 120)}`; console.warn(`AVC: row alignment failed for ${slug}: ${e.message}`); }
 
 // ---------------------------------------------------------------------------
+// Bottom-strip region (2026-09-19). GROUND_MIN_SHARE keeps the region list
+// complete RELATIVE to the diff mass — but on churn-heavy pages a small REAL
+// change in the page's bottom chrome (the pinned mobile nav bar) falls under
+// the 2% share floor, no region covers the page bottom, and the grounding
+// text then FORBIDS reporting it ("everything outside these regions is
+// pixel-identical"). Proven on a churn-heavy mobile grid page 2026-09-19: a full
+// bottom-nav A/B flip (9,874 red px = 0.28% of a grid-churn diff) was
+// silenced on all four benchmarked models; PASS shipped. The floor is
+// share-based by design, so the guard is ABSOLUTE: when the last
+// BOTTOM_STRIP_PX rows of the compared diff hold real red mass and no kept
+// region reaches them, append a full-width BOTTOM STRIP region — numbered,
+// cropped, probe-able like any region; the model still judges it under the
+// normal rules. Equal-heights pairs only: when the heights differ, the tail
+// zone / PAGE-BOTTOM pair machinery already owns the page bottom. Threshold
+// measured 2026-09-19: nav-change signal ≈9.9k red px, benign CTA shift 4.5k
+// (forms its own >=2%-share region, so `covered` suppresses the strip), clean
+// pages 0 — 400 sits 25x under the signal and above the measured zero noise.
+// Additive-only; kill-switch below.
+const BOTTOMSTRIP_ENABLE = true;
+const BOTTOM_STRIP_PX = 420; // pinned mobile nav ~350px + margin
+const BOTTOMSTRIP_MIN_RED = 400;
+if (BOTTOMSTRIP_ENABLE && clusters && !heightsDiffer && rowRedDiff && nMeta.height > BOTTOM_STRIP_PX * 3) {
+  try {
+    const s = newH600 / nMeta.height;
+    const d0 = Math.max(0, Math.floor((nMeta.height - BOTTOM_STRIP_PX) * s));
+    let stripRed = 0;
+    for (let y = d0; y < diffH600; y++) stripRed += rowRedDiff[y];
+    const stripTop = ((nMeta.height - BOTTOM_STRIP_PX) / nMeta.height) * 1000;
+    const covered = clusters.some(c => !c.tail && c.top + c.height >= stripTop - 2);
+    if (stripRed >= BOTTOMSTRIP_MIN_RED && !covered) {
+      clusters.push({ top: stripTop, left: 0, width: 1000, height: 1000 - stripTop, bottomStrip: true });
+      trail.push(`bottom-strip region: ${stripRed} changed px in the last ${BOTTOM_STRIP_PX}px of the page fell under the region share floor — appended as a numbered region so the change stays reportable`);
+    }
+  } catch (e) { console.warn(`AVC: bottom-strip check failed for ${slug}: ${e.message}`); }
+}
+
+// ---------------------------------------------------------------------------
 // Native-resolution crop pairs of the top diff regions. A 12px glyph that is
 // sub-pixel noise in the downscaled context images is trivially legible in a
 // native crop — this is what killed the "missing X" confabulation in testing.
@@ -621,8 +667,11 @@ if (topmost && !cropPicks.includes(topmost)) cropPicks[cropPicks.length - 1] = t
 // trivial bytes) must never lose that race to a megapixel region crop
 // (observed on the incident pair: budget break at crop 2 left the seam
 // unshipped; a shared last slot also let seam 2 overwrite seam 1 — review).
-cropPicks = realClusters.filter(c => c.insert)
-  .concat(cropPicks.filter(c => !c.insert))
+// The bottom-strip region force-ships a crop the same way: it only exists when
+// NO other region reaches the page bottom, so its crop pair is the model's
+// only native-res look at the change it was appended for (~420px, trivial bytes).
+cropPicks = realClusters.filter(c => c.insert || c.bottomStrip)
+  .concat(cropPicks.filter(c => !c.insert && !c.bottomStrip))
   .slice(0, wantHeaderStrip ? CROP_MAX - 1 : CROP_MAX);
 
 const cropPairs = []; // [{label, baseB64, newB64}] — base64 stays in this local const only
@@ -653,7 +702,9 @@ for (const boxN of cropPicks) {
     cropPairs.push({
       label: boxN.insert
         ? `Region ${regionNo} INSERTION SEAM: rows y≈${boxN.bandPx.y0}-${boxN.bandPx.y1}px of Image 2 exist ONLY in the new version — identify from THIS crop exactly what was inserted (the baseline crop shows the same location BEFORE the insertion)`
-        : `Region ${regionNo}: top=${Math.round(boxN.top)},left=${Math.round(boxN.left)},width=${Math.round(boxN.width)},height=${Math.round(boxN.height)}`,
+        : boxN.bottomStrip
+          ? `Region ${regionNo} BOTTOM-OF-PAGE STRIP (last ${BOTTOM_STRIP_PX}px of the page, full width, native resolution) — judge this page-chrome strip from THIS crop pair`
+          : `Region ${regionNo}: top=${Math.round(boxN.top)},left=${Math.round(boxN.left)},width=${Math.round(boxN.width)},height=${Math.round(boxN.height)}`,
       baseB64: cb.toString('base64'),
       newB64: cn.toString('base64')
     });
@@ -780,6 +831,7 @@ if (clustersForPrompt.length) {
     if (shiftProvenRegionNos.includes(i + 1)) extra += ` — MECHANICAL DISPLACEMENT EVIDENCE: this region differs ONLY because its content sits ${shiftIdentity.deltaPx}px higher in the new version; a bottom-aligned pixel comparison PROVES the content itself is identical in both versions. Nothing here was added, removed, or changed — do NOT report a defect in this region`;
     const rc = realClusters[i];
     if (rc && rc.insert) extra += ` — MECHANICAL INSERTION EVIDENCE: rows y≈${rc.bandPx.y0}-${rc.bandPx.y1}px of Image 2 exist ONLY in the new version (content was INSERTED here; the content below is baseline content shifted down). If you report added content at this location, defect_region MUST be ${i + 1}. Whether the insertion is a defect remains YOUR judgment per the rules above (e.g. an extra tile row inside a rotating content grid is routine rotation)`;
+    if (rc && rc.bottomStrip) extra += ` — BOTTOM PAGE STRIP: the last ${BOTTOM_STRIP_PX}px of the page (pinned navigation / footer chrome). Automated comparison found changed pixels here that were too small a share of the total diff to form a region of their own; inspect this strip's close-up crop pair and judge it under the normal rules`;
     return `Region ${i + 1}: ${JSON.stringify(c)}${extra}`;
   }).join('\n');
   groundingText =
@@ -833,30 +885,33 @@ const callGemini = async (extraFeedback) => {
   return { parsed, modelVersion: response.modelVersion || 'gemini-pro-latest' };
 };
 
-const QWEN_JSON_RULE = '\n\nCRITICAL: Return ONLY this exact JSON structure (no markdown, no other fields): {"thought_process": "...", "status": "PASS" or "FAIL", "reason": "...", "evidence": "...", "present_in_baseline": true/false, "present_in_new": true/false, "defect_region": 0, "box": {"ymin": 0, "xmin": 0, "ymax": 0, "xmax": 0}} — defect_region is the NUMBER of the pixel-diff region (from the numbered region list) containing the root defect (0 if PASS or no list applies); box in 0-1000 scale relative to Image 2 (New Version).';
+const FALLBACK_JSON_RULE = '\n\nCRITICAL: Return ONLY this exact JSON structure (no markdown, no other fields): {"thought_process": "...", "status": "PASS" or "FAIL", "reason": "...", "evidence": "...", "present_in_baseline": true/false, "present_in_new": true/false, "defect_region": 0, "box": {"ymin": 0, "xmin": 0, "ymax": 0, "xmax": 0}} — defect_region is the NUMBER of the pixel-diff region (from the numbered region list) containing the root defect (0 if PASS or no list applies); box in 0-1000 scale relative to Image 2 (New Version).';
 
-const callQwen = async (messages, timeoutMs) => {
+const callFallback = async (messages, timeoutMs) => {
   if (!OR_KEY) throw new Error('OPENROUTER_API_KEY not set');
   const response = await this.helpers.httpRequest({
     method: 'POST',
     url: OR_URL,
     headers: { Authorization: `Bearer ${OR_KEY}` },
     body: {
-      model: QWEN_MODEL,
+      model: FALLBACK_MODEL,
       temperature: 0.0,
+      // Load-bearing for DeepSeek: reasoning defaults ON at high effort, where
+      // latency blows past this node's timeouts on photo-dense pages
+      // (3x240s timeouts on the home page in the 2026-09-19 benchmark).
       reasoning: { enabled: false },
       messages,
       stream: false,
       response_format: { type: 'json_object' },
-      provider: QWEN_PROVIDER
+      provider: FALLBACK_PROVIDER
     },
     json: true,
     timeout: timeoutMs || 90000
   });
-  return { content: JSON.parse(response.choices[0].message.content), served: response.model || QWEN_MODEL };
+  return { content: JSON.parse(response.choices[0].message.content), served: response.model || FALLBACK_MODEL };
 };
 
-const callQwenComparison = async () => {
+const callFallbackComparison = async () => {
   const userParts = [
     { type: 'text', text: 'Image 1 (Baseline):' },
     { type: 'image_url', image_url: { url: `data:image/png;base64,${baselineBase64}` } },
@@ -869,8 +924,8 @@ const callQwenComparison = async () => {
     userParts.push({ type: 'text', text: `Close-up crop pair ${i + 1} — NEW VERSION crop:` });
     userParts.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${cp.newB64}` } });
   });
-  const r = await callQwen([
-    { role: 'system', content: GEMINI_PROMPT + groundingText + QWEN_JSON_RULE },
+  const r = await callFallback([
+    { role: 'system', content: GEMINI_PROMPT + groundingText + FALLBACK_JSON_RULE },
     { role: 'user', content: userParts }
   ]);
   return { parsed: r.content, modelVersion: r.served };
@@ -879,7 +934,7 @@ const callQwenComparison = async () => {
 // Existence probes: single-image questions sidestep the cross-image attention
 // bias that produces "missing element" confabulations; benchmarked 100%
 // reliable on all three models. v3 (2026-07-29): probes are FAIL-CLOSED
-// (Qwen -> Qwen retry -> Gemini prober -> claim treated as unverifiable) and a
+// (fallback prober x2 -> Gemini prober -> claim treated as unverifiable) and a
 // claim that survives the local probe faces a FULL-PAGE sweep: "X is missing"
 // is a statement about the whole page — if X is visible anywhere (it moved,
 // the grid reordered), the claim is false. The 12:31Z run shipped two FAILs
@@ -990,8 +1045,8 @@ const callGeminiProbe = async (question, b64) => {
   });
   return JSON.parse(response.candidates[0].content.parts[0].text);
 };
-const callQwenProbe = async (question, b64) => {
-  const q = await callQwen([
+const callFallbackProbe = async (question, b64) => {
+  const q = await callFallback([
     { role: 'system', content: PROBE_SYSTEM },
     { role: 'user', content: [
       { type: 'text', text: question },
@@ -1001,7 +1056,7 @@ const callQwenProbe = async (question, b64) => {
   return q.content;
 };
 // rPx = pixel rect {left,top,w,h} on the TARGET image. Throws err.probeUnavailable
-// only when every prober (Qwen x2, Gemini) is unreachable.
+// only when every prober (fallback x2, Gemini) is unreachable.
 const probeOnRect = async (reason, rPx, target, isSweep) => {
   const isBase = target === 'baseline';
   const buf = await extractCrop(isBase ? baselinePath : newPath, isBase ? bMeta : nMeta, rPx);
@@ -1009,9 +1064,9 @@ const probeOnRect = async (reason, rPx, target, isSweep) => {
   const question = probeQuestion(target, reason, isSweep);
   for (let attempt = 0; attempt < 2; attempt++) {
     try {
-      const r = await callQwenProbe(question, b64);
+      const r = await callFallbackProbe(question, b64);
       const near = probeSaysPresent(reason, r);
-      return { visible: r.claimed_element_visible === true || !!near, near, what: String(r.what_is_there || ''), via: 'qwen', b64, question };
+      return { visible: r.claimed_element_visible === true || !!near, near, what: String(r.what_is_there || ''), via: 'deepseek', b64, question };
     } catch (e) { await new Promise(res => setTimeout(res, 2000)); }
   }
   try {
@@ -1026,10 +1081,10 @@ const probeOnRect = async (reason, rPx, target, isSweep) => {
 };
 // Full-page sweep for the claimed element. Windows fully inside the already
 // probed local rect are skipped; the sweep stops at the first CONFIRMED hit.
-// A Qwen hit is cross-checked by the Gemini prober (two independent models
-// must agree before a FAIL is vetoed); if the confirmer is unreachable the
-// Qwen hit stands — the owner's contract prefers a degraded-generic FAIL over
-// a fabricated story.
+// A fallback-prober hit is cross-checked by the Gemini prober (two independent
+// models must agree before a FAIL is vetoed); if the confirmer is unreachable
+// the fallback hit stands — the owner's contract prefers a degraded-generic
+// FAIL over a fabricated story.
 // SWEEP_MAX_WIN 28 -> 35 (2026-08-01): 28 windows cover only ~55.7k px, but
 // real pages reach 67.6k — the unscanned bottom is the FOOTER, where this
 // site's additions/moves concentrate, and the trail claimed "not found" over
@@ -1072,7 +1127,7 @@ const sweepForElement = async (reason, target, excludePxRect) => {
     const failedRound = [];
     let deadlineBroke = false;
     for (let i = 0; i < queue.length && !hit; i += SWEEP_CONC) {
-      // Runner-kill guard: a Qwen-degraded sweep (2x45s timeouts per window) can
+      // Runner-kill guard: a fallback-degraded sweep (2x45s timeouts per window) can
       // stack past the 600s task kill. Fail toward "unverifiable" (the caller's
       // fail-closed veto) instead — never toward the kill.
       if (Date.now() - T0 > 420000) { unavailable = queue.length - i + failedRound.length; deadlineBroke = true; break; }
@@ -1086,8 +1141,8 @@ const sweepForElement = async (reason, target, excludePxRect) => {
         // Sequential confirmations are deadline-gated too: several slow-but-
         // successful Gemini answers used to be able to stack ~360s past the
         // 420s line (review, 2026-08-05). Past the deadline the confirmer is
-        // treated as down — the Qwen hit stands, same as the catch below.
-        if (x.r.via === 'qwen' && Date.now() - T0 <= 420000) {
+        // treated as down — the fallback hit stands, same as the catch below.
+        if (x.r.via !== 'gemini' && Date.now() - T0 <= 420000) {
           try {
             const g = await callGeminiProbe(x.r.question, x.r.b64);
             // The confirmer is held to the same rule as the prober: quoting the
@@ -1095,7 +1150,7 @@ const sweepForElement = async (reason, target, excludePxRect) => {
             const gNear = g.claimed_element_visible === true ? null : nearMatch(reason, g.what_is_there);
             if (g.claimed_element_visible !== true && !gNear) continue; // unconfirmed -> not a hit
             if (gNear && !x.r.near) x.r.near = gNear; // the trail should name whichever model near-matched
-          } catch (e) { /* confirmer down: the Qwen hit stands */ }
+          } catch (e) { /* confirmer down: the fallback hit stands */ }
         }
         hit = { yPx: Math.round(x.w.top + x.w.h / 2), what: x.r.what, near: x.r.near };
         break;
@@ -1215,14 +1270,14 @@ try {
     } catch (err2) { retryErrMsg = err2.message; }
   }
   if (!parsed) {
-    console.warn(`AVC: Gemini unavailable for ${slug}; trying Qwen fallback`);
+    console.warn(`AVC: Gemini unavailable for ${slug}; trying DeepSeek fallback`);
     try {
-      ({ parsed, modelVersion } = await callQwenComparison());
-      aiProvider = 'qwen-fallback';
+      ({ parsed, modelVersion } = await callFallbackComparison());
+      aiProvider = 'deepseek-fallback';
     } catch (fbErr) {
       return [{
         json: {
-          error: { message: `Primary: ${primaryError.message}; Retry: ${retryErrMsg}; Qwen fallback: ${fbErr.message}` },
+          error: { message: `Primary: ${primaryError.message}; Retry: ${retryErrMsg}; DeepSeek fallback: ${fbErr.message}` },
           resized_width: resizedWidth,
           mime_type: "image/png"
         }
@@ -1282,7 +1337,7 @@ if (parsed && parsed.status === 'FAIL' && clusters && clusters.length) {
     // signal (regionfix contract) and raw box coords are garbage — a claim
     // pinned to a numbered region (including a seam pinned by the backstop
     // above) must fall through to the probe machinery, not die on its box
-    // (review major, 2026-08-05). NOTE for degraded modes (qwen-fallback or
+    // (review major, 2026-08-05). NOTE for degraded modes (deepseek-fallback or
     // T0 past the retry gate): this veto still lands on the generic
     // pixeldiff-fallback FAIL — a deliberately conservative rendering of a
     // mechanically-disproven claim, kept for owner review rather than PASS.
@@ -1342,17 +1397,18 @@ if (parsed && parsed.status === 'FAIL' && clusters && clusters.length) {
           const localPx = nRectToPx(rectN, meta);
           const local = await probeOnRect(p.reason, localPx, target, false);
           // A probe HIT vetoes a FAIL, so it needs two-model agreement: a loose
-          // Qwen "something card-like is visible" answer must not overturn a
-          // true removal (caught by the synthetic truth set on 2026-07-29).
+          // fallback-prober "something card-like is visible" answer must not
+          // overturn a true removal (caught with the then-Qwen prober by the
+          // synthetic truth set on 2026-07-29).
           let localHit = local.visible;
-          if (localHit && local.via === 'qwen') {
+          if (localHit && local.via !== 'gemini') {
             try {
               const g = await callGeminiProbe(local.question, local.b64);
               if (g.claimed_element_visible !== true && !nearMatch(p.reason, g.what_is_there)) {
                 localHit = false;
-                trail.push(`local ${target} probe (y≈${localPx.top}-${localPx.top + localPx.h}px): qwen hit NOT confirmed by gemini — treating as not visible`);
+                trail.push(`local ${target} probe (y≈${localPx.top}-${localPx.top + localPx.h}px): ${local.via} hit NOT confirmed by gemini — treating as not visible`);
               }
-            } catch (e) { /* confirmer down: the Qwen hit stands */ }
+            } catch (e) { /* confirmer down: the fallback hit stands */ }
           }
           if (localHit) {
             trail.push(`local ${target} probe (y≈${localPx.top}-${localPx.top + localPx.h}px, via ${local.via}): element VISIBLE at claim location (confirmed)${nearNote(local.near)}`);
