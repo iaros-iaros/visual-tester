@@ -24,8 +24,8 @@ claims are then machine-verified before anything is reported to Slack.
     Fill in the required values (e.g. `POSTGRES_PASSWORD`, `AI_API_KEY`, `SLACK_WEBHOOK`,
     `TARGET_WEBSITE_URL`, `WEBHOOK_URL`, `UPDATE_BASELINE_TOKEN`, the `N8N_BASIC_AUTH_*`
     and `CADDY_EVIDENCE_*` credentials, and `UID`/`GID`). `OPENROUTER_API_KEY` is optional
-    but strongly recommended: without it the Qwen fallback comparer and the existence-probe
-    verification layer self-disable.
+    but strongly recommended: without it the DeepSeek fallback comparer and the
+    existence-probe verification layer self-disable.
 
 3.  **Build and start the services** (the n8n image is custom-built — see Architecture):
 
@@ -78,16 +78,18 @@ Each run:
 4.  **AI Vision Check** — sends the pair to **Gemini** (pro-tier alias) grounded with
     machine evidence so it cannot freewheel: a numbered list of pixel-diff regions it must
     attribute any defect to, native-resolution crop pairs of the changed areas, dHash
-    reshuffle evidence for rotated content grids, and row-alignment **insertion seams**
+    reshuffle evidence for rotated content grids, row-alignment **insertion seams**
     (rows that exist only in the new capture — how an inserted element is pinpointed
-    instead of the content it displaced). Any "missing/added" FAIL claim is then verified
-    fail-closed: Qwen existence probes at the claimed location (Gemini cross-checked),
-    a full-page sweep, one corrective retry — an unverifiable claim is discarded and the
-    failure falls back to a generic pixel-diff description rather than a story. A discarded
-    claim is recorded verbatim in the verification trail, never in the headline reason: it
-    is the one sentence the system decided was false, and quoting it up front reads as the
-    finding. Qwen (via OpenRouter) also serves as the full fallback comparer when Gemini is
-    unavailable.
+    instead of the content it displaced), and a **bottom-strip region** appended when a
+    small real change in the page's bottom chrome would otherwise fall under the
+    region-share floor and be declared noise. Any "missing/added" FAIL claim is then
+    verified fail-closed: DeepSeek existence probes at the claimed location (Gemini
+    cross-checked), a full-page sweep, one corrective retry — an unverifiable claim is
+    discarded and the failure falls back to a generic pixel-diff description rather than
+    a story. A discarded claim is recorded verbatim in the verification trail, never in
+    the headline reason: it is the one sentence the system decided was false, and quoting
+    it up front reads as the finding. DeepSeek Flash (via OpenRouter, provider-pinned)
+    also serves as the full fallback comparer when Gemini is unavailable.
 5.  **Report** — builds an HTML report whose rows carry buttons, not images: nothing is
     fetched until a reviewer clicks. **Compare Baseline ↔ New** opens the failure pair
     (frozen per run, so later re-baselines can't rewrite history) side by side in one
