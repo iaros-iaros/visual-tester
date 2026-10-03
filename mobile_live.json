@@ -10,7 +10,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://browserless:3000/chrome/function?timeout=180000",
+        "url": "http://browserless:3000/chrome/function?timeout=180000&launch={\"args\":[\"--force-gpu-mem-available-mb=1024\"]}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -172,7 +172,7 @@
     {
       "parameters": {
         "method": "POST",
-        "url": "http://browserless:3000/chrome/function?timeout=180000",
+        "url": "http://browserless:3000/chrome/function?timeout=180000&launch={\"args\":[\"--force-gpu-mem-available-mb=1024\"]}",
         "sendHeaders": true,
         "headerParameters": {
           "parameters": [
@@ -1006,9 +1006,9 @@
   "meta": null,
   "nodeGroups": [],
   "pinData": {},
-  "versionId": "0a7a620a-ce4d-46a0-8a1c-2f8c5f9c8625",
-  "activeVersionId": "0a7a620a-ce4d-46a0-8a1c-2f8c5f9c8625",
-  "versionCounter": 199,
+  "versionId": "82596e2c-8b7f-4ed7-b8c7-42d9f0530052",
+  "activeVersionId": "82596e2c-8b7f-4ed7-b8c7-42d9f0530052",
+  "versionCounter": 200,
   "triggerCount": 1,
   "sourceWorkflowId": null,
   "tags": [],

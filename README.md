@@ -121,7 +121,13 @@ Each run:
     proprietary codecs, so H.264 `<video>` fails to decode and the target site paints
     a playback-error overlay that no real visitor sees. The `chrome` image serves the
     function endpoint at **`/chrome/function`** (chromium served it at `/function`),
-    so the image tag and the capture nodes' URL have to change together.
+    so the image tag and the capture nodes' URL have to change together. That URL also
+    passes `launch={"args":["--force-gpu-mem-available-mb=1024"]}`: Chrome's default
+    compositor tile budget (512MB) is not enough to rasterise a dense mobile page at
+    3× in one full-page shot (1179×61440px), and the tiles it gives up on are drawn as
+    bare page background — a missing header, logo or footer that the pipeline then
+    verifies as real. The flag is a cap, not an allocation, and is pixel-neutral on
+    pages that already fit.
 -   **Caddy** — reverse proxy and static file server for the evidence images and HTML reports.
 -   **Postgres** — database for n8n.
 
