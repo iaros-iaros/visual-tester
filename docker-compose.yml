@@ -141,8 +141,14 @@ services:
   # the capture nodes' URL is tied to this image. `latest` is already 2.56.x, which
   # would also drag in nine months of server changes under the viewport ladder that
   # was validated against 2.38.2.
+  # 2026-10-22: bumped 2.38.2 -> 2.57.2 (Chrome 141 -> 156) for the Node October 2026
+  # security release (Node 24.8.0 -> 24.22.1). The mobile Take Screenshot code was run
+  # against both images side by side on a sample of pages: /chrome/function unchanged,
+  # viewport established on rung 0, no capture_error, identical page heights. Pixel Diff
+  # Check vs baseline stayed under 0.1% on every sample; Chrome 156 text antialiasing
+  # alone puts text-heavy pages at ~0.07%. Roll back by restoring the tag below.
   browserless:
-    image: ghcr.io/browserless/chrome:v2.38.2
+    image: ghcr.io/browserless/chrome:v2.57.2
     container_name: browserless-visual-tester
     ports:
       - "127.0.0.1:3000:3000"

@@ -6,7 +6,9 @@
 # dry-run + build verified). n8n 2.30.x no longer bundles its own sharp, so the old
 # "@img copy into n8n's bundled sharp" step was removed — the global sharp carries its
 # own @img bindings and the pixel diff requires that global copy via NODE_PATH.
-FROM n8nio/n8n:2.30.6
+# 2026-10-22: upgraded 2.30.6 -> 2.44.6 (Node 24.16.0 -> 26.12.1; the official image moved
+# to Node 26). Picks up the Node October 2026 security release.
+FROM n8nio/n8n:2.44.6
 
 USER root
 
