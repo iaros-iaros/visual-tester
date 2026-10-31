@@ -1,6 +1,6 @@
 services:
   caddy:
-    image: caddy:latest
+    image: caddy:2.11.7
     restart: unless-stopped
     ports:
       - "80:80"   # HTTP (Redirects to HTTPS automatically)

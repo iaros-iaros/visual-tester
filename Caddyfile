@@ -1,8 +1,13 @@
 # -------------------------------------------------------
 # 1. INTERNAL ACCESS (Docker container to container)
-# Host: caddy (No Authentication)
+# Host: caddy:8080 (No Authentication)
+# Port 8080 is deliberately not published in docker-compose.yml. On the
+# published port 80 this site would also answer any outside request that sends
+# "Host: caddy", skipping the basic_auth below. Source-IP filtering can't stand
+# in for that: IPv6 clients reach the container via docker-proxy and appear as
+# the bridge gateway, which is a private address.
 # -------------------------------------------------------
-http://caddy {
+http://caddy:8080 {
     # Serve everything in /srv/files for internal tools like Browserless
     root * /srv/files
     file_server

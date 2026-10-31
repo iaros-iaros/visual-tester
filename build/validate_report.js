@@ -5,7 +5,7 @@
 //
 // Usage:
 //   node validate_report.js <device> <outHtml> [baseUrl]
-// baseUrl defaults to http://caddy — the internal, auth-free file server, so a
+// baseUrl defaults to http://caddy:8080 — the internal, auth-free file server, so a
 // browserless session on the same docker network can load the real evidence:
 //   node validate_report.js mobile /tmp/vt/report.html
 const fs = require('fs');
@@ -13,7 +13,7 @@ const path = require('path');
 
 const DEVICE = process.argv[2] || 'mobile';
 const OUT = process.argv[3];
-const BASE = process.argv[4] || 'http://caddy';
+const BASE = process.argv[4] || 'http://caddy:8080';
 if (!OUT) {
   console.error('usage: node validate_report.js <device> <outHtml> [baseUrl]');
   process.exit(2);
