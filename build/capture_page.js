@@ -158,6 +158,51 @@ export default async ({ page, context }) => {
     ]).catch(() => {});
     await new Promise(r => setTimeout(r, 200));
 
+    // Onboarding guide (2026-11-02). Some pages open a step-by-step onboarding guide as
+    // soon as the consent Accept above lands. On desktop it covers the viewport; on mobile
+    // it is a fixed bottom sheet whose backdrop dims the first screen, and which the navbar
+    // pin below can re-anchor under the footer. Close it the way a visitor does, with its
+    // Skip, which also ends the highlight animation it starts. Found by its label, never its
+    // classes (those carry the rotating CSS-module prefix, see the closer note below), and
+    // only inside an on-screen position:fixed container, so an in-page Skip is never
+    // clicked. A guide that outlives three Skips fails closed rather than being captured:
+    // accepting such a capture would bake the guide into the baseline.
+    const overlaySkip = async () => {
+      const h = await pg.evaluateHandle(() => {
+        const vw = window.innerWidth, vh = window.innerHeight;
+        for (const b of document.querySelectorAll('button')) {
+          if ((b.textContent || '').trim().toLowerCase() !== 'skip') continue;
+          const r = b.getBoundingClientRect();
+          if (!(r.width > 0 && r.height > 0) || r.bottom <= 0 || r.top >= vh || r.right <= 0 || r.left >= vw) continue;
+          if (getComputedStyle(b).visibility === 'hidden') continue;
+          for (let n = b.parentElement; n && n !== document.documentElement; n = n.parentElement) {
+            if (getComputedStyle(n).position === 'fixed') return b;
+          }
+        }
+        return null;
+      }).catch(() => null);
+      return h ? h.asElement() : null;
+    };
+    let guideSkip = await overlaySkip();
+    if (guideSkip) {
+      const pathBefore = await pg.evaluate(() => location.pathname).catch(() => null);
+      for (let i = 0; i < 3 && guideSkip; i++) {
+        await guideSkip.click().catch(() => {});
+        for (let t = 0; t < 10; t++) {
+          await new Promise(r => setTimeout(r, 150));
+          guideSkip = await overlaySkip();
+          if (!guideSkip) break;
+        }
+      }
+      if (guideSkip) {
+        return { capture_error: true, reason: 'onboarding overlay still open after 3 clicks on its Skip button' };
+      }
+      const pathAfter = await pg.evaluate(() => location.pathname).catch(() => null);
+      if (pathBefore && pathAfter && pathAfter !== pathBefore) {
+        return { capture_error: true, reason: 'overlay Skip navigated away: ' + pathBefore + ' -> ' + pathAfter };
+      }
+      await new Promise(r => setTimeout(r, 500));
+    }
 
     // Scroll-lock guard (2026-08-07): an auto-opened modal (e.g. the signup bottom-
     // sheet on one marketing page) locks the page behind it -- html overflow:hidden
@@ -329,6 +374,105 @@ export default async ({ page, context }) => {
       new Promise(r => setTimeout(r, 6000)),
     ]).catch(() => {});
     await new Promise(r => setTimeout(r, 250));
+
+    // Paint off-screen videos (2026-11-02). Chrome composites a parked video's frame into a
+    // full-page capture only if the video has been on screen since it was parked, so one
+    // that is off-screen comes out empty: a blank tile, or whatever the page draws behind
+    // the video. Which ones paint varies per run, so a page with a few dozen video tiles
+    // put 0.6-4% of itself into every diff. Scrolling to them fixes the paint but loads
+    // more of an infinite feed and starts lazy images the capture then catches half-done,
+    // and inserting a canvas beside each video changes the page structure. So decode the
+    // same file again as a CORS copy, draw its first frame (where parking left the video)
+    // the way the video's object-fit would, paint that as the element's own background, and
+    // push the native frame out of its box: nothing scrolls, no node is added, nothing
+    // moves. On-screen videos keep their native frame; a video whose copy cannot be read
+    // (no CORS, a transform, a decode error, the time cap) is left exactly as it was.
+    await Promise.race([
+      pg.evaluate(async () => {
+        const vh = window.innerHeight, k = window.devicePixelRatio || 1;
+        const deadline = Date.now() + 30000;   // a late copy must never restyle mid-screenshot
+        const todo = Array.from(document.querySelectorAll('video')).filter(v => {
+          const r = v.getBoundingClientRect();
+          return v.currentSrc && r.width > 0 && r.height > 0 && (r.top >= vh || r.bottom <= 0)
+            && getComputedStyle(v).transform === 'none';
+        });
+        const paint = (v) => new Promise(done => {
+          const copy = document.createElement('video');
+          let timer = null, over = false;
+          const finish = () => {
+            if (over) return;
+            over = true;
+            clearTimeout(timer);
+            copy.removeAttribute('src');
+            try { copy.load(); } catch (e) {}
+            done();
+          };
+          const draw = async () => {
+            try {
+              const cs = getComputedStyle(v), r = v.getBoundingClientRect();
+              const px = (p) => parseFloat(cs.getPropertyValue(p)) || 0;
+              const cw = r.width - px('padding-left') - px('padding-right') - px('border-left-width') - px('border-right-width');
+              const ch = r.height - px('padding-top') - px('padding-bottom') - px('border-top-width') - px('border-bottom-width');
+              const iw = copy.videoWidth, ih = copy.videoHeight;
+              if (!(cw > 0 && ch > 0 && iw > 0 && ih > 0)) return finish();
+              const fit = cs.objectFit;
+              let s = 1;
+              if (fit === 'cover') s = Math.max(cw / iw, ch / ih);
+              else if (fit === 'contain') s = Math.min(cw / iw, ch / ih);
+              else if (fit === 'scale-down') s = Math.min(1, cw / iw, ch / ih);
+              const dw = fit === 'fill' ? cw : iw * s, dh = fit === 'fill' ? ch : ih * s;
+              const pos = cs.objectPosition.split(' ');
+              const at = (tok, free) => (tok || '50%').endsWith('%') ? free * parseFloat(tok || '50%') / 100 : (parseFloat(tok) || 0);
+              const c = document.createElement('canvas');
+              c.width = Math.round(cw * k);
+              c.height = Math.round(ch * k);
+              c.getContext('2d').drawImage(copy, at(pos[0], cw - dw) * k, at(pos[1], ch - dh) * k, dw * k, dh * k);
+              // Encoded synchronously: toBlob encodes in idle time, which a busy capture
+              // barely has (1.5-3.4 s per frame under load).
+              const url = c.toDataURL('image/png');
+              const img = new Image();
+              img.src = url;
+              await img.decode();
+              if (over || Date.now() > deadline) return finish();
+              v.style.setProperty('background-image', 'url("' + url + '")', 'important');
+              v.style.setProperty('background-size', '100% 100%', 'important');
+              v.style.setProperty('background-position', '0 0', 'important');
+              v.style.setProperty('background-repeat', 'no-repeat', 'important');
+              v.style.setProperty('background-origin', 'content-box', 'important');
+              v.style.setProperty('object-position', '-100000px -100000px', 'important');
+            } catch (e) {}
+            finish();
+          };
+          timer = setTimeout(finish, 15000);
+          copy.addEventListener('error', finish, { once: true });
+          copy.addEventListener('seeked', draw, { once: true });
+          // Metadata only, then a seek into the first frame: that fetches just what the
+          // frame needs instead of buffering the whole file (1 ms is still frame 0).
+          copy.addEventListener('loadedmetadata', () => { copy.currentTime = 0.001; }, { once: true });
+          copy.crossOrigin = 'anonymous';
+          copy.muted = true;
+          copy.preload = 'metadata';
+          copy.src = v.currentSrc;
+        });
+        for (let i = 0; i < todo.length && Date.now() < deadline; i += 6) {
+          await Promise.all(todo.slice(i, i + 6).map(paint));
+        }
+      }),
+      new Promise(r => setTimeout(r, 35000)),
+    ]).catch(() => {});
+    await new Promise(r => setTimeout(r, 300));
+
+    // Decode every loaded image before the shot (2026-11-02). An image with
+    // decoding="async" that has never been on screen can still be undecoded when the
+    // full-page raster runs, and then it paints as an empty box: a feed post below the
+    // first screen came out blank in some runs and not in others. decode() makes it ready
+    // to paint; an image that fails or misses the cap paints as it would have anyway.
+    await Promise.race([
+      pg.evaluate(() => Promise.all(Array.from(document.images)
+        .filter(i => i.complete && i.naturalWidth > 0)
+        .map(i => i.decode().catch(() => {})))),
+      new Promise(r => setTimeout(r, 5000)),
+    ]).catch(() => {});
 
     // Final backstop: never emit a wrong-width OR wrong-scale capture. (Emulation is
     // stable after the verified load, so this only fires on a genuine anomaly.)
