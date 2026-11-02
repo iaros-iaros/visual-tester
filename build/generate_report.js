@@ -291,7 +291,7 @@ for (const deviceType of reportGroups){
       ` : ``;
 
       const aiMetaBlock = data.modelVersion || data.reasonSource ? `
-        <div style="font-size:11px; color:#666; font-family:monospace; margin-bottom:8px;">AI model: ${data.modelVersion || 'n/a'}${data.aiProvider && data.aiProvider !== 'gemini' ? ' via ' + data.aiProvider : ''}${data.reasonSource && data.reasonSource !== 'model' ? ' &middot; reason source: ' + data.reasonSource : ''}</div>` : '';
+        <div style="font-size:11px; color:#666; font-family:monospace; margin-bottom:8px;">AI model: ${data.modelVersion || 'n/a'}${data.aiProvider && data.aiProvider !== 'primary' ? ' via ' + data.aiProvider : ''}${data.reasonSource && data.reasonSource !== 'model' ? ' &middot; reason source: ' + data.reasonSource : ''}</div>` : '';
       const thoughtBlock = data.thought_process ? `
         <details style="margin-bottom:10px;"><summary style="cursor:pointer; font-size:12px; color:#555;">AI thought process</summary><div style="font-size:12px; color:#444; white-space:pre-wrap; background:#fafbfc; border:1px solid #eee; border-radius:4px; padding:8px; margin-top:6px;">${escapeHtml(data.thought_process)}</div></details>` : '';
       // v2 (2026-07-29): machine verification trail (probe/sweep evidence) so a

@@ -19,7 +19,7 @@
 //             on both attempts. Expects "sweep INCOMPLETE" in the trail and
 //             the fail-closed verification-unavailable veto -> retry PASS.
 //   found   — like removal, but every sweep probe answers VISIBLE (confirmed
-//             by the scripted Gemini prober). Expects the hit to land in the
+//             by the scripted primary prober). Expects the hit to land in the
 //             FIRST batch at the claim's height-shifted expected location
 //             (y in the bottom half of the page) — proving claim-first window
 //             ordering; the old top-down order would hit at y≈1100.
@@ -66,33 +66,36 @@ const PASS_ANSWER = {
   box: { ymin: 0, xmin: 0, ymax: 0, xmax: 0 }
 };
 
-const calls = { mainFail: 0, retry: 0, fbLocal: 0, fbSweep: 0, fbSweepErrors: 0, geminiProbe: 0 };
+const calls = { mainFail: 0, retry: 0, fbLocal: 0, fbSweep: 0, fbSweepErrors: 0, primaryProbe: 0 };
 let retryFeedback = null;
 
-const geminiResponse = (obj) => ({ candidates: [{ content: { parts: [{ text: JSON.stringify(obj) }] } }], modelVersion: 'stub-gemini' });
+const primaryResponse = (obj) => ({ choices: [{ message: { content: JSON.stringify(obj) } }], model: 'stub-primary' });
 const orResponse = (obj) => ({ choices: [{ message: { content: JSON.stringify(obj) } }], model: 'stub-fallback' });
 
 const helpers = {
   httpRequest: async (opts) => {
-    if (String(opts.url).includes('generativelanguage')) {
-      const schema = opts.body && opts.body.generationConfig && opts.body.generationConfig.response_schema;
+    // Primary and fallback share the OpenRouter URL; the primary is the request that
+    // carries a strict json_schema response format.
+    const rf = opts.body && opts.body.response_format;
+    if (rf && rf.type === 'json_schema') {
+      const schema = rf.json_schema && rf.json_schema.schema;
       const isProbe = !!(schema && schema.properties && schema.properties.claimed_element_visible);
       if (isProbe) {
-        calls.geminiProbe++;
-        // In 'partial' the Gemini prober is down too — otherwise it would
+        calls.primaryProbe++;
+        // In 'partial' the primary prober is down too — otherwise it would
         // rescue every erroring fallback window and coverage would stay full.
-        if (SCENARIO === 'partial') throw new Error('stub gemini prober down');
-        // Gemini prober: confirms visibility in 'found', denies otherwise.
-        return geminiResponse({ claimed_element_visible: SCENARIO === 'found', what_is_there: 'stub gemini prober answer' });
+        if (SCENARIO === 'partial') throw new Error('stub primary prober down');
+        // Primary prober: confirms visibility in 'found', denies otherwise.
+        return primaryResponse({ claimed_element_visible: SCENARIO === 'found', what_is_there: 'stub primary prober answer' });
       }
-      const promptText = opts.body.contents[0].parts[0].text || '';
+      const promptText = (opts.body.messages && opts.body.messages[0] && opts.body.messages[0].content) || '';
       if (promptText.includes('## VERIFICATION FEEDBACK')) {
         calls.retry++;
         retryFeedback = promptText.slice(promptText.indexOf('## VERIFICATION FEEDBACK'));
-        return geminiResponse(PASS_ANSWER);
+        return primaryResponse(PASS_ANSWER);
       }
       calls.mainFail++;
-      return geminiResponse(SCENARIO === 'regionpin' ? Object.assign({}, FAIL_ANSWER, { defect_region: 1 }) : FAIL_ANSWER);
+      return primaryResponse(SCENARIO === 'regionpin' ? Object.assign({}, FAIL_ANSWER, { defect_region: 1 }) : FAIL_ANSWER);
     }
     if (String(opts.url).includes('openrouter')) {
       const msgs = opts.body.messages || [];
@@ -145,7 +148,7 @@ fn(require, mock$, $input, $env, helpers, fastSetTimeout).then((r) => {
   if (SCENARIO === 'veto') {
     expect('tailIdentity computed', !!out.tailIdentity);
     expect('bottom-identity veto in trail', trail.includes('bottom-identity veto'));
-    expect('NO local/sweep probes ran', calls.fbLocal === 0 && calls.fbSweep === 0 && calls.geminiProbe === 0);
+    expect('NO local/sweep probes ran', calls.fbLocal === 0 && calls.fbSweep === 0 && calls.primaryProbe === 0);
     expect('corrective retry received bottom-identity feedback', calls.retry === 1 && /bottom-identity/.test(retryFeedback || ''));
     expect('final status PASS via retry', out.ai.status === 'PASS' && out.reasonSource === 'model-retry');
   }

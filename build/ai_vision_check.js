@@ -42,11 +42,18 @@ if (pdcJson.captureError) {
 }
 const MAX_WIDTH = __MAX_WIDTH__;
 const MAX_PIXELS = __MAX_PIXELS__;
-const API_KEY = $env.AI_API_KEY;
-// Kept as the -latest alias ON PURPOSE (owner decision 2026-07-27): pinned previews get
-// retired under you (gemini-3-pro-preview 404s while still listed). Drift is handled by
-// observability instead: modelVersion is persisted on every result and shown in reports.
-const PRIMARY_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-latest:generateContent?key=${API_KEY}`;
+// Primary is Kimi via OpenRouter (owner's choice and settings, 2026-11-02): the -latest
+// alias (resolves to kimi-k3 today; the served model and provider are persisted on every
+// result, as with the fallback), temperature 0.1, low reasoning effort. It replaced gemini-pro-latest, whose prepaid
+// credits had run out: every Gemini call returned HTTP 402, which silently handed every
+// verdict to the fallback below. On a 23-pair truth set it caught 7/8 real defects
+// (the fallback alone: 6/8, it passed a full redesign) and passed 10/11 noise pairs, the
+// eleventh being a real but transient missing image. Typical latency ~15 s; default
+// reasoning effort took ~60 s and timed out at 120 s on 3/23 pairs. ~1-2 cents a verdict.
+// It serves the verdict, the corrective retry and the second-opinion prober, under the
+// same JSON contract (enforced as a strict schema).
+const PRIMARY_MODEL = '~moonshotai/kimi-latest';
+const PRIMARY_LABEL = 'kimi';
 // Fallback is DeepSeek Flash via OpenRouter (2026-09-19 swap, benchmarked on an
 // 18-pair truth battery vs the previous Qwen3.5 fallback: equal verdict
 // quality, zero fabricated FAIL stories vs one for Qwen, ~2x faster, ~6.6x
@@ -64,8 +71,12 @@ const OR_KEY = $env.OPENROUTER_API_KEY || null;
 const OR_URL = 'https://openrouter.ai/api/v1/chat/completions';
 const FALLBACK_MODEL = '~deepseek/deepseek-flash-latest';
 const FALLBACK_PROVIDER = { only: ['deepinfra'] };
+// Primary routing as the owner specified; require_parameters keeps out any host
+// that would drop the strict response schema. Of these, only parasail serves kimi-k3
+// today, so a parasail outage sends verdicts to the fallback rather than to an unvetted host.
+const PRIMARY_PROVIDER = { only: ['parasail', 'atlas-cloud', 'streamlake'], require_parameters: true };
 
-const GEMINI_PROMPT = "You are a Senior QA Engineer. Compare the TWO images provided. Image 1 is the Baseline. Image 2 is the New Version.\n\n## THE GOLDEN RULE (CONSERVATIVE MODE)\n**Default to PASS.** Only fail if the difference is OBVIOUS and breaks the user experience. If you have to \"squint\" or zoom in to see it, it is NOT a bug.\n\n## 1. IGNORE THESE (NOISE FILTER)\n- **Tiny Shifts:** Elements moving 1-5 pixels. (Common in browser rendering).\n- **Text Thickness:** Fonts looking slightly bolder/thinner (Anti-aliasing).\n- **Color Vibrance:** Slight changes in hue/brightness (Compression artifacts).\n- **Dynamic Data:** Timestamps, dates, view counts, random IDs.\n- **Icons:** Slight pixelation differences in icons.\n- **Rotating Content Grids:** Content/poster grids rotate their items between visits. Different, reordered, or additional grid thumbnails/rows are routine rotation -> PASS, unless the grid layout itself is broken (overlapping tiles, gaps, broken images).\n- **Moved/Reordered Content:** An element is missing ONLY if it is absent from the ENTIRE new page. A card, tile, banner, or CTA that appears at a DIFFERENT position (reordered within a grid, moved up or down the page) is NOT missing and NOT added -> PASS. Grid CTA/promo cards routinely move between grid positions during rotation.\n\n## 2. FLAG THESE (REAL BUGS)\n- **Missing Content:** A button, image, or paragraph exists on Left but is GONE on Right. Before flagging, verify at the same location in Image 2 (use the crops) that it is truly gone — an element that is restyled, moved, or lost an icon/dot is NOT missing. If the element might simply sit at a different position, scan the WHOLE of Image 2 before claiming removal.\n- **Added Content:** A paragraph, section, banner, or element appears on Right that did not exist on Left. Before flagging, verify at the same location in Image 1 that it is truly absent there — an element that exists in both but changed style (e.g. lost or gained an icon/dot) is NOT new. Report REAL additions — do NOT excuse them as an 'intentional update'; a human reviews the report and accepts intentional changes there.\n- **Layout Shifts:** If an unexpected element appears and pushes everything else down, identify the NEW element as the bug. Do NOT highlight the content that merely shifted below it.\n- **Broken Layout:** Elements overlapping, crushed, or completely misaligned.\n- **Logo/Brand Damage:** The site logo is an EXCEPTION to the restyling tolerance: a graphic, icon, or stylized character that is part of the logo disappearing, failing to load, or being replaced by plain text IS a real bug — report it as FAIL.\n\n## THINKING PROCESS (Must be in 'thought_process'):\n1. **Scan:** Look at the image globally.\n2. **List Candidates:** Identify potential differences.\n3. **The Filter:** For each candidate, ask: \"Does this prevent a user from using the site?\" or \"Is this just a rendering quirk?\"\n   - If it's a quirk -> DISCARD.\n   - If it's a real bug -> KEEP.\n4. **Verdict:** If NO candidates remain after filtering, the status is PASS.\n\n## OUTPUT RULES\n- If PASS: 'reason' must be 'None', 'box' must be all 0, 'defect_region' must be 0, 'evidence' must be 'None', and present_in_baseline/present_in_new must both be true.\n- If FAIL: 'reason' must describe the exact defect. 'evidence' must state what is VISIBLY at the defect location in EACH image (look again at both before writing it). 'present_in_baseline'/'present_in_new' state whether the affected element is visible in each image. 'defect_region' MUST be the NUMBER of the pixel-diff region (from the numbered PIXEL-DIFF GROUND TRUTH list, when present) that contains the root defect — this is the PRIMARY location signal and drives where the report highlights the defect; re-read the region list and pick the one whose area contains the defect you described. Use 0 ONLY if no region list was provided or the defect lies outside every listed region (e.g. in the uncompared bottom area when one is noted). 'box' MUST be an object: {\"ymin\": ..., \"xmin\": ..., \"ymax\": ..., \"xmax\": ...} wrapping ONLY the root defect relative to Image 2 (New Version) using native 0-1000 scale.";
+const JUDGE_PROMPT = "You are a Senior QA Engineer. Compare the TWO images provided. Image 1 is the Baseline. Image 2 is the New Version.\n\n## THE GOLDEN RULE (CONSERVATIVE MODE)\n**Default to PASS.** Only fail if the difference is OBVIOUS and breaks the user experience. If you have to \"squint\" or zoom in to see it, it is NOT a bug.\n\n## 1. IGNORE THESE (NOISE FILTER)\n- **Tiny Shifts:** Elements moving 1-5 pixels. (Common in browser rendering).\n- **Text Thickness:** Fonts looking slightly bolder/thinner (Anti-aliasing).\n- **Color Vibrance:** Slight changes in hue/brightness (Compression artifacts).\n- **Dynamic Data:** Timestamps, dates, view counts, random IDs.\n- **Icons:** Slight pixelation differences in icons.\n- **Rotating Content Grids:** Content/poster grids rotate their items between visits. Different, reordered, or additional grid thumbnails/rows are routine rotation -> PASS, unless the grid layout itself is broken (overlapping tiles, gaps, broken images).\n- **Moved/Reordered Content:** An element is missing ONLY if it is absent from the ENTIRE new page. A card, tile, banner, or CTA that appears at a DIFFERENT position (reordered within a grid, moved up or down the page) is NOT missing and NOT added -> PASS. Grid CTA/promo cards routinely move between grid positions during rotation.\n\n## 2. FLAG THESE (REAL BUGS)\n- **Missing Content:** A button, image, or paragraph exists on Left but is GONE on Right. Before flagging, verify at the same location in Image 2 (use the crops) that it is truly gone — an element that is restyled, moved, or lost an icon/dot is NOT missing. If the element might simply sit at a different position, scan the WHOLE of Image 2 before claiming removal.\n- **Added Content:** A paragraph, section, banner, or element appears on Right that did not exist on Left. Before flagging, verify at the same location in Image 1 that it is truly absent there — an element that exists in both but changed style (e.g. lost or gained an icon/dot) is NOT new. Report REAL additions — do NOT excuse them as an 'intentional update'; a human reviews the report and accepts intentional changes there.\n- **Layout Shifts:** If an unexpected element appears and pushes everything else down, identify the NEW element as the bug. Do NOT highlight the content that merely shifted below it.\n- **Broken Layout:** Elements overlapping, crushed, or completely misaligned.\n- **Logo/Brand Damage:** The site logo is an EXCEPTION to the restyling tolerance: a graphic, icon, or stylized character that is part of the logo disappearing, failing to load, or being replaced by plain text IS a real bug — report it as FAIL.\n\n## THINKING PROCESS (Must be in 'thought_process'):\n1. **Scan:** Look at the image globally.\n2. **List Candidates:** Identify potential differences.\n3. **The Filter:** For each candidate, ask: \"Does this prevent a user from using the site?\" or \"Is this just a rendering quirk?\"\n   - If it's a quirk -> DISCARD.\n   - If it's a real bug -> KEEP.\n4. **Verdict:** If NO candidates remain after filtering, the status is PASS.\n\n## OUTPUT RULES\n- If PASS: 'reason' must be 'None', 'box' must be all 0, 'defect_region' must be 0, 'evidence' must be 'None', and present_in_baseline/present_in_new must both be true.\n- If FAIL: 'reason' must describe the exact defect. 'evidence' must state what is VISIBLY at the defect location in EACH image (look again at both before writing it). 'present_in_baseline'/'present_in_new' state whether the affected element is visible in each image. 'defect_region' MUST be the NUMBER of the pixel-diff region (from the numbered PIXEL-DIFF GROUND TRUTH list, when present) that contains the root defect — this is the PRIMARY location signal and drives where the report highlights the defect; re-read the region list and pick the one whose area contains the defect you described. Use 0 ONLY if no region list was provided or the defect lies outside every listed region (e.g. in the uncompared bottom area when one is noted). 'box' MUST be an object: {\"ymin\": ..., \"xmin\": ..., \"ymax\": ..., \"xmax\": ...} wrapping ONLY the root defect relative to Image 2 (New Version) using native 0-1000 scale.";
 
 const RESPONSE_SCHEMA = {
   type: "OBJECT",
@@ -855,34 +866,75 @@ if (tailZone) {
 const baselineBase64 = a.out.toString('base64');
 const newBase64 = b.out.toString('base64');
 
-const buildGeminiParts = (extraFeedback) => {
+// One user message for both judges: the two pages, then the close-up crop pairs.
+const buildComparisonParts = () => {
   const parts = [
-    { text: GEMINI_PROMPT + groundingText + (extraFeedback ? `\n\n## VERIFICATION FEEDBACK\n${extraFeedback}` : '') },
-    { inline_data: { mime_type: "image/png", data: baselineBase64 } },
-    { inline_data: { mime_type: "image/png", data: newBase64 } }
+    { type: 'text', text: 'Image 1 (Baseline):' },
+    { type: 'image_url', image_url: { url: `data:image/png;base64,${baselineBase64}` } },
+    { type: 'text', text: 'Image 2 (New Version):' },
+    { type: 'image_url', image_url: { url: `data:image/png;base64,${newBase64}` } }
   ];
   cropPairs.forEach((cp, i) => {
-    parts.push({ text: `Close-up crop pair ${i + 1} (${cp.label}) — BASELINE crop:` });
-    parts.push({ inline_data: { mime_type: "image/png", data: cp.baseB64 } });
-    parts.push({ text: `Close-up crop pair ${i + 1} — NEW VERSION crop:` });
-    parts.push({ inline_data: { mime_type: "image/png", data: cp.newB64 } });
+    parts.push({ type: 'text', text: `Close-up crop pair ${i + 1} (${cp.label}) — BASELINE crop:` });
+    parts.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${cp.baseB64}` } });
+    parts.push({ type: 'text', text: `Close-up crop pair ${i + 1} — NEW VERSION crop:` });
+    parts.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${cp.newB64}` } });
   });
   return parts;
 };
 
-const callGemini = async (extraFeedback) => {
+// The response schemas above are written in the Gemini dialect (upper-case types);
+// OpenRouter's strict structured output wants JSON Schema with every object closed.
+const toJsonSchema = (s) => {
+  const out = { type: String(s.type).toLowerCase() };
+  if (s.description) out.description = s.description;
+  if (s.enum) out.enum = s.enum;
+  if (s.properties) {
+    out.properties = {};
+    for (const [k, v] of Object.entries(s.properties)) out.properties[k] = toJsonSchema(v);
+    out.required = s.required || Object.keys(s.properties);
+    out.additionalProperties = false;
+  }
+  return out;
+};
+const parseModelJson = (text) => JSON.parse(String(text || '').trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''));
+
+const callPrimaryRaw = async (messages, schema, name, timeoutMs) => {
+  if (!OR_KEY) throw new Error('OPENROUTER_API_KEY not set');
   const response = await this.helpers.httpRequest({
     method: 'POST',
-    url: PRIMARY_URL,
+    url: OR_URL,
+    headers: { Authorization: `Bearer ${OR_KEY}` },
     body: {
-      contents: [{ parts: buildGeminiParts(extraFeedback) }],
-      generationConfig: { response_mime_type: "application/json", temperature: 0.0, response_schema: RESPONSE_SCHEMA }
+      model: PRIMARY_MODEL,
+      temperature: 0.1,
+      reasoning: { effort: 'low' },
+      messages,
+      stream: false,
+      response_format: { type: 'json_schema', json_schema: { name, strict: true, schema: toJsonSchema(schema) } },
+      provider: PRIMARY_PROVIDER
     },
     json: true,
-    timeout: 120000
+    timeout: timeoutMs
   });
-  const parsed = JSON.parse(response.candidates[0].content.parts[0].text);
-  return { parsed, modelVersion: response.modelVersion || 'gemini-pro-latest' };
+  // OpenRouter can answer 200 with an upstream error in the body instead of choices.
+  if (response.error || !(response.choices && response.choices[0] && response.choices[0].message)) {
+    const e = new Error(`primary returned no answer: ${JSON.stringify(response.error || response).slice(0, 200)}`);
+    e.httpCode = (response.error && Number(response.error.code)) || 0;
+    throw e;
+  }
+  return {
+    content: parseModelJson(response.choices[0].message.content),
+    served: `${response.model || PRIMARY_MODEL}${response.provider ? ` (${response.provider})` : ''}`
+  };
+};
+
+const callPrimary = async (extraFeedback) => {
+  const r = await callPrimaryRaw([
+    { role: 'system', content: JUDGE_PROMPT + groundingText + (extraFeedback ? `\n\n## VERIFICATION FEEDBACK\n${extraFeedback}` : '') },
+    { role: 'user', content: buildComparisonParts() }
+  ], RESPONSE_SCHEMA, 'visual_verdict', 120000);
+  return { parsed: r.content, modelVersion: r.served };
 };
 
 const FALLBACK_JSON_RULE = '\n\nCRITICAL: Return ONLY this exact JSON structure (no markdown, no other fields): {"thought_process": "...", "status": "PASS" or "FAIL", "reason": "...", "evidence": "...", "present_in_baseline": true/false, "present_in_new": true/false, "defect_region": 0, "box": {"ymin": 0, "xmin": 0, "ymax": 0, "xmax": 0}} — defect_region is the NUMBER of the pixel-diff region (from the numbered region list) containing the root defect (0 if PASS or no list applies); box in 0-1000 scale relative to Image 2 (New Version).';
@@ -912,21 +964,9 @@ const callFallback = async (messages, timeoutMs) => {
 };
 
 const callFallbackComparison = async () => {
-  const userParts = [
-    { type: 'text', text: 'Image 1 (Baseline):' },
-    { type: 'image_url', image_url: { url: `data:image/png;base64,${baselineBase64}` } },
-    { type: 'text', text: 'Image 2 (New Version):' },
-    { type: 'image_url', image_url: { url: `data:image/png;base64,${newBase64}` } }
-  ];
-  cropPairs.forEach((cp, i) => {
-    userParts.push({ type: 'text', text: `Close-up crop pair ${i + 1} (${cp.label}) — BASELINE crop:` });
-    userParts.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${cp.baseB64}` } });
-    userParts.push({ type: 'text', text: `Close-up crop pair ${i + 1} — NEW VERSION crop:` });
-    userParts.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${cp.newB64}` } });
-  });
   const r = await callFallback([
-    { role: 'system', content: GEMINI_PROMPT + groundingText + FALLBACK_JSON_RULE },
-    { role: 'user', content: userParts }
+    { role: 'system', content: JUDGE_PROMPT + groundingText + FALLBACK_JSON_RULE },
+    { role: 'user', content: buildComparisonParts() }
   ]);
   return { parsed: r.content, modelVersion: r.served };
 };
@@ -934,7 +974,7 @@ const callFallbackComparison = async () => {
 // Existence probes: single-image questions sidestep the cross-image attention
 // bias that produces "missing element" confabulations; benchmarked 100%
 // reliable on all three models. v3 (2026-07-29): probes are FAIL-CLOSED
-// (fallback prober x2 -> Gemini prober -> claim treated as unverifiable) and a
+// (fallback prober x2 -> primary prober -> claim treated as unverifiable) and a
 // claim that survives the local probe faces a FULL-PAGE sweep: "X is missing"
 // is a statement about the whole page — if X is visible anywhere (it moved,
 // the grid reordered), the claim is false. The 12:31Z run shipped two FAILs
@@ -1032,18 +1072,15 @@ const probeQuestion = (target, reason, isSweep) => {
     ? `A QA system reported this defect about a screenshot: "${reason}". Below is ${where} the PREVIOUS (baseline) full-page screenshot. Is the element that was claimed to be NEWLY ADDED actually ALREADY VISIBLE here?${strict} If the claim is not about an added element, answer claimed_element_visible=false.`
     : `A QA system reported this defect about a screenshot: "${reason}". Below is ${where} the CURRENT (new) full-page screenshot. Is the element that was claimed missing/removed actually VISIBLE here?${strict} If the claim is not about a missing element, answer claimed_element_visible=false.`;
 };
-const callGeminiProbe = async (question, b64) => {
-  const response = await this.helpers.httpRequest({
-    method: 'POST',
-    url: PRIMARY_URL,
-    body: {
-      contents: [{ parts: [{ text: question }, { inline_data: { mime_type: "image/png", data: b64 } }] }],
-      generationConfig: { response_mime_type: "application/json", temperature: 0.0, response_schema: PROBE_SCHEMA }
-    },
-    json: true,
-    timeout: 60000
-  });
-  return JSON.parse(response.candidates[0].content.parts[0].text);
+const callPrimaryProbe = async (question, b64) => {
+  const r = await callPrimaryRaw([
+    { role: 'system', content: PROBE_SYSTEM },
+    { role: 'user', content: [
+      { type: 'text', text: question },
+      { type: 'image_url', image_url: { url: `data:image/png;base64,${b64}` } }
+    ] }
+  ], PROBE_SCHEMA, 'existence_probe', 60000);
+  return r.content;
 };
 const callFallbackProbe = async (question, b64) => {
   const q = await callFallback([
@@ -1056,7 +1093,7 @@ const callFallbackProbe = async (question, b64) => {
   return q.content;
 };
 // rPx = pixel rect {left,top,w,h} on the TARGET image. Throws err.probeUnavailable
-// only when every prober (fallback x2, Gemini) is unreachable.
+// only when every prober (fallback x2, primary) is unreachable.
 const probeOnRect = async (reason, rPx, target, isSweep) => {
   const isBase = target === 'baseline';
   const buf = await extractCrop(isBase ? baselinePath : newPath, isBase ? bMeta : nMeta, rPx);
@@ -1070,9 +1107,9 @@ const probeOnRect = async (reason, rPx, target, isSweep) => {
     } catch (e) { await new Promise(res => setTimeout(res, 2000)); }
   }
   try {
-    const g = await callGeminiProbe(question, b64);
+    const g = await callPrimaryProbe(question, b64);
     const near = probeSaysPresent(reason, g);
-    return { visible: g.claimed_element_visible === true || !!near, near, what: String(g.what_is_there || ''), via: 'gemini', b64, question };
+    return { visible: g.claimed_element_visible === true || !!near, near, what: String(g.what_is_there || ''), via: PRIMARY_LABEL, b64, question };
   } catch (e) {
     const err = new Error(`probe unavailable: ${e.message}`);
     err.probeUnavailable = true;
@@ -1081,7 +1118,7 @@ const probeOnRect = async (reason, rPx, target, isSweep) => {
 };
 // Full-page sweep for the claimed element. Windows fully inside the already
 // probed local rect are skipped; the sweep stops at the first CONFIRMED hit.
-// A fallback-prober hit is cross-checked by the Gemini prober (two independent
+// A fallback-prober hit is cross-checked by the primary prober (two independent
 // models must agree before a FAIL is vetoed); if the confirmer is unreachable
 // the fallback hit stands — the owner's contract prefers a degraded-generic
 // FAIL over a fabricated story.
@@ -1139,12 +1176,12 @@ const sweepForElement = async (reason, target, excludePxRect) => {
       for (const x of results) {
         if (!x || !x.r.visible) continue;
         // Sequential confirmations are deadline-gated too: several slow-but-
-        // successful Gemini answers used to be able to stack ~360s past the
+        // successful primary answers used to be able to stack ~360s past the
         // 420s line (review, 2026-08-05). Past the deadline the confirmer is
         // treated as down — the fallback hit stands, same as the catch below.
-        if (x.r.via !== 'gemini' && Date.now() - T0 <= 420000) {
+        if (x.r.via !== PRIMARY_LABEL && Date.now() - T0 <= 420000) {
           try {
-            const g = await callGeminiProbe(x.r.question, x.r.b64);
+            const g = await callPrimaryProbe(x.r.question, x.r.b64);
             // The confirmer is held to the same rule as the prober: quoting the
             // element back under different wording IS agreement that it is here.
             const gNear = g.claimed_element_visible === true ? null : nearMatch(reason, g.what_is_there);
@@ -1250,27 +1287,27 @@ const clusterForBox = (rawBox) => {
 };
 
 // --- Main flow --------------------------------------------------------------
-let parsed = null, modelVersion = null, aiProvider = 'gemini', reasonSource = 'model';
+let parsed = null, modelVersion = null, aiProvider = 'primary', reasonSource = 'model';
 let primaryError = null;
 
 try {
-  ({ parsed, modelVersion } = await callGemini(null));
+  ({ parsed, modelVersion } = await callPrimary(null));
 } catch (err) {
   primaryError = err;
   // Non-429 4xx errors are deterministic (bad payload, safety block) — a
   // sleep+retry of the identical request just wastes 100+s per failing page.
   const code = err.httpCode || err.statusCode || 0;
   const retryable = code === 429 || !(code >= 400 && code < 500);
-  console.warn(`AVC: primary Gemini failed for ${slug} (${code || err.message}); ${retryable ? 'retrying once' : 'not retryable, going to fallback'}`);
+  console.warn(`AVC: primary ${PRIMARY_LABEL} failed for ${slug} (${code || err.message}); ${retryable ? 'retrying once' : 'not retryable, going to fallback'}`);
   let retryErrMsg = 'skipped (non-retryable 4xx)';
   if (retryable) {
     await new Promise(r => setTimeout(r, 10000));
     try {
-      ({ parsed, modelVersion } = await callGemini(null));
+      ({ parsed, modelVersion } = await callPrimary(null));
     } catch (err2) { retryErrMsg = err2.message; }
   }
   if (!parsed) {
-    console.warn(`AVC: Gemini unavailable for ${slug}; trying DeepSeek fallback`);
+    console.warn(`AVC: primary ${PRIMARY_LABEL} unavailable for ${slug}; trying DeepSeek fallback`);
     try {
       ({ parsed, modelVersion } = await callFallbackComparison());
       aiProvider = 'deepseek-fallback';
@@ -1401,12 +1438,12 @@ if (parsed && parsed.status === 'FAIL' && clusters && clusters.length) {
           // overturn a true removal (caught with the then-Qwen prober by the
           // synthetic truth set on 2026-07-29).
           let localHit = local.visible;
-          if (localHit && local.via !== 'gemini') {
+          if (localHit && local.via !== PRIMARY_LABEL) {
             try {
-              const g = await callGeminiProbe(local.question, local.b64);
+              const g = await callPrimaryProbe(local.question, local.b64);
               if (g.claimed_element_visible !== true && !nearMatch(p.reason, g.what_is_there)) {
                 localHit = false;
-                trail.push(`local ${target} probe (y≈${localPx.top}-${localPx.top + localPx.h}px): ${local.via} hit NOT confirmed by gemini — treating as not visible`);
+                trail.push(`local ${target} probe (y≈${localPx.top}-${localPx.top + localPx.h}px): ${local.via} hit NOT confirmed by ${PRIMARY_LABEL} — treating as not visible`);
               }
             } catch (e) { /* confirmer down: the fallback hit stands */ }
           }
@@ -1463,10 +1500,10 @@ if (parsed && parsed.status === 'FAIL' && clusters && clusters.length) {
   let veto = await applyGuards(parsed);
   // Bound the guard chain: skip the corrective retry when the accumulated API
   // time is already large, so the task can never approach the 600s runner kill.
-  if (veto && aiProvider === 'gemini' && (Date.now() - T0) < 300000) {
+  if (veto && aiProvider === 'primary' && (Date.now() - T0) < 300000) {
     console.warn(`AVC: veto for ${slug} -> corrective retry (${veto.slice(0, 80)})`);
     try {
-      const retry = await callGemini(`Your previous answer reported: "${parsed.reason}". That claim failed automated verification (${veto}). Re-examine the images, focusing STRICTLY on the pixel-diff regions listed above, the uncompared bottom area (if one is noted), and the close-up crops, and report the actual difference (or PASS if it is only noise).`);
+      const retry = await callPrimary(`Your previous answer reported: "${parsed.reason}". That claim failed automated verification (${veto}). Re-examine the images, focusing STRICTLY on the pixel-diff regions listed above, the uncompared bottom area (if one is noted), and the close-up crops, and report the actual difference (or PASS if it is only noise).`);
       // Re-run the FULL guard set on the retry (a repeated fabrication with a
       // plausible box must not slip through on geometry alone).
       const retryVeto = retry.parsed.status === 'PASS' ? null : await applyGuards(retry.parsed);
