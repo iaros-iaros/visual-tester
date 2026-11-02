@@ -41,6 +41,9 @@ return {
   heightsDiffer, overlapEndN: Math.round(overlapEndN * 10) / 10,
   clustersForPrompt, insertSeamNos,
   insertBands: insertBandsKept, alignCoverage, alignSkipReason, alignDeleteGaps,
+  // typeof guards keep the harness usable on node bodies that predate deletion seams
+  deleteBands: typeof deleteBandsKept !== 'undefined' ? deleteBandsKept : null,
+  deleteSeamNos: typeof deleteSeamNos !== 'undefined' ? deleteSeamNos : null,
   reshuffleEvidence, tailTop: tailZone ? Math.round(tailZone.top) : null,
   tailIdentity,
   shiftIdentity, shiftProvenRegionNos,

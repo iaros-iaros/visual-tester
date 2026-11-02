@@ -294,7 +294,16 @@ const ALIGN_MAX_BAND_H = 400;
 // coverage 0.16 because grid churn dominates the row count, yet its band
 // flanks are matched 1 row away. Coverage is still reported for observability.
 const ALIGN_PAD_PX = 40, ALIGN_FLANK = 300;
-let insertBandsKept = [], alignCoverage = null, alignSkipReason = null, alignDeleteGaps = 0;
+// Deletion seams (below): kill-switch, size cap (a removed section, not a page of
+// churn), the reach below the seam within which the top-aligned diff must light
+// up, the minimum content rows for the "found elsewhere" test to mean anything, and
+// how far the page's height drop may differ from the removed height.
+const DELSEAM_ENABLE = true;
+const DEL_MAX_BAND_H = 2000, DEL_RED_REACH_PX = 300, DEL_MIN_ROWS = 20, DEL_NET_TOL_PX = 40;
+// Share of a candidate's content rows reappearing elsewhere at one common offset,
+// at or above which it counts as moved/duplicated rather than removed.
+const DEL_ELSEWHERE_MAX = 0.5;
+let insertBandsKept = [], deleteBandsKept = [], alignCoverage = null, alignSkipReason = null, alignDeleteGaps = 0;
 if (!ALIGN_ENABLE) alignSkipReason = 'disabled';
 else if (!clusters) alignSkipReason = 'no-usable-diff';
 else if (bMeta.width !== nMeta.width) alignSkipReason = 'width-mismatch';
@@ -350,6 +359,7 @@ else try {
   let totalNonLowN = 0; for (let y = 0; y < nH; y++) if (!N.low[y]) totalNonLowN++;
   for (const [, ny] of anchors) if (!N.low[ny]) matchedNonLowN++;
   const rawBands = []; // unmatched runs with content ONLY on the new side
+  const rawDelBands = []; // ...and with content ONLY on the baseline side
   const bounds = [[-1, -1]].concat(anchors, [[bH, nH]]);
   for (let k = 0; k + 1 < bounds.length; k++) {
     const [pb, pn] = bounds[k], [nb, nn] = bounds[k + 1];
@@ -374,7 +384,14 @@ else try {
     let nbN = 0, e0 = -1, e1 = -1;
     for (let y = n; y <= ne; y++) if (!N.low[y]) { nbN++; if (e0 < 0) e0 = y; e1 = y; }
     if (nbN > 0 && nbB === 0) rawBands.push({ y0: e0, y1: e1, h: e1 - e0 + 1, gapNewLen: ne - n + 1, flankUp: e0 - n + 1, flankDown: ne - e1 + 1 });
-    else if (nbB > 0 && nbN === 0) alignDeleteGaps++;
+    else if (nbB > 0 && nbN === 0) {
+      alignDeleteGaps++;
+      let d0 = -1, d1 = -1;
+      for (let y = b; y <= be; y++) if (!B.low[y]) { if (d0 < 0) d0 = y; d1 = y; }
+      // n..ne = the new-side rows standing in for the removed ones (a thin seam
+      // for a removal, a blank stretch for content blanked in place)
+      rawDelBands.push({ y0: d0, y1: d1, h: d1 - d0 + 1, gapBaseLen: be - b + 1, flankUp: d0 - b + 1, flankDown: be - d1 + 1, n0: n, n1: Math.max(n, ne) });
+    }
     // content on BOTH sides = in-place modification (grid churn, resized
     // sections, displaced-content mixtures): never an insertion band.
   }
@@ -408,6 +425,87 @@ else try {
     const top = Math.max(0, bd.y0 - ALIGN_PAD_PX), bot = Math.min(nH - 1, bd.y1 + ALIGN_PAD_PX);
     clusters.push({ top: (top / nH) * 1000, left: 0, width: 1000, height: ((bot - top + 1) / nH) * 1000, insert: true, bandPx: { y0: bd.y0, y1: bd.y1, h: bd.h, gapNewLen: bd.gapNewLen } });
     trail.push(`mechanical insertion evidence: rows y≈${bd.y0}-${bd.y1}px exist only in the new version (content inserted there; content below is baseline content shifted down)`);
+  }
+
+  // Deletion seams (2026-11-02): the mirror image. A removed section leaves a gap
+  // with content ONLY on the baseline side, and everything below it moves up —
+  // which the displacement proof then (correctly) calls identical, while the
+  // giant region at the cut gets reshuffle evidence for the shifted content
+  // around it. Without this, the model was told "62% present at shifted
+  // positions, NOT removed" and "typically a rotating grid" about a deleted
+  // 512px text section, and every judge tested PASSed it. Gated harder than
+  // insertions, because a rotating grid serving fewer rows is the classic
+  // false deletion: besides the size/flank/corroboration gates, the removed
+  // rows must NOT reappear together elsewhere on the new page (moved content
+  // does), too little content to tell means no seam, and the page must
+  // have got shorter by about what was removed (the net-removal gate below).
+  // Additive-only: any gate failure leaves things as before.
+  if (DELSEAM_ENABLE && rawDelBands.length) {
+    rawDelBands.sort((a, z) => a.y0 - z.y0);
+    const dm = [];
+    for (const bd of rawDelBands) {
+      const last = dm[dm.length - 1];
+      if (last && bd.y0 - last.y1 <= ALIGN_MERGE) { last.y1 = Math.max(last.y1, bd.y1); last.h = last.y1 - last.y0 + 1; last.gapBaseLen += bd.gapBaseLen; last.flankDown = bd.flankDown; last.n1 = Math.max(last.n1, bd.n1); }
+      else dm.push(Object.assign({}, bd));
+    }
+    let dk = dm.filter(bd => bd.h >= ALIGN_MIN_H && bd.gapBaseLen >= ALIGN_MIN_GAP && bd.h <= DEL_MAX_BAND_H
+      && bd.flankUp <= ALIGN_FLANK && bd.flankDown <= ALIGN_FLANK);
+    if (dk.length && rowRedDiff) {
+      const s = newH600 / nH;
+      dk = dk.filter(bd => {
+        if (Math.floor(bd.n0 * s) >= diffH600) return false; // a removal is visible in the compared area by definition
+        const d0 = Math.max(0, Math.floor(bd.n0 * s) - 2), d1 = Math.min(diffH600 - 1, Math.ceil((bd.n1 + DEL_RED_REACH_PX) * s));
+        for (let y = d0; y <= d1; y++) if (rowRedDiff[y]) return true;
+        return false;
+      });
+    } else dk = [];
+    if (dk.length) {
+      // Moved-content test on the alignment's own row signatures (native rows, so
+      // an exact copy elsewhere matches byte for byte; tile hashes of separately
+      // downscaled text did not): the share of the candidate's content rows that
+      // reappear in the new page at ONE common offset. Moved or duplicated content
+      // scores ~1; a removal scores near 0, since chance matches of single rows
+      // scatter across offsets.
+      const nIndex = new Map();
+      for (let y = 0; y < nH; y++) {
+        if (N.low[y]) continue;
+        const at = nIndex.get(N.sig[y]);
+        if (!at) nIndex.set(N.sig[y], [y]); else if (at.length < 64) at.push(y);
+      }
+      const keptDel = [];
+      for (const bd of dk.sort((a, z) => z.h - a.h).slice(0, ALIGN_MAX_BANDS)) {
+        let rows = 0;
+        const byOffset = new Map();
+        for (let y = bd.y0; y <= bd.y1; y++) {
+          if (B.low[y]) continue;
+          rows++;
+          for (const ny of (nIndex.get(B.sig[y]) || [])) byOffset.set(ny - y, (byOffset.get(ny - y) || 0) + 1);
+        }
+        if (rows < DEL_MIN_ROWS) { trail.push(`deletion candidate rows y≈${bd.y0}-${bd.y1}px of the baseline: too little content to verify (${rows} content rows) — not reported as a deletion`); continue; }
+        let best = 0;
+        for (const v of byOffset.values()) if (v > best) best = v;
+        const elsewhere = best / rows;
+        if (elsewhere >= DEL_ELSEWHERE_MAX) { trail.push(`deletion candidate rows y≈${bd.y0}-${bd.y1}px of the baseline: ${(elsewhere * 100).toFixed(0)}% of its rows reappear together elsewhere on the new page (moved or duplicated, not removed) — not reported`); continue; }
+        keptDel.push(Object.assign(bd, { elsewhere }));
+      }
+      // Net-removal gate: a removal makes the page shorter by what it removed. When
+      // the height did NOT drop by that much, the gap was refilled elsewhere — new
+      // feed posts on top pushing old ones off the bottom read exactly like a
+      // removed section locally (a blog list, 2026-11-02 corpus) — so that is
+      // churn for the regular regions and rotation rules, not a deletion seam.
+      const removedPx = keptDel.reduce((t, bd) => t + bd.gapBaseLen - (bd.n1 - bd.n0 + 1), 0);
+      const shrankPx = bMeta.height - nMeta.height;
+      if (keptDel.length && Math.abs(removedPx - shrankPx) > Math.max(DEL_NET_TOL_PX, 0.1 * removedPx)) {
+        trail.push(`deletion candidate(s) at baseline y≈${keptDel.map(bd => `${bd.y0}-${bd.y1}`).join(', ')}px not reported: the page got ${shrankPx}px shorter, not the ${removedPx}px removed there — content was replaced elsewhere (feed/grid churn), not removed`);
+        keptDel.length = 0;
+      }
+      deleteBandsKept = keptDel.sort((a, z) => a.y0 - z.y0);
+      for (const bd of deleteBandsKept) {
+        const top = Math.max(0, bd.n0 - ALIGN_PAD_PX), bot = Math.min(nH - 1, bd.n1 + ALIGN_PAD_PX);
+        clusters.push({ top: (top / nH) * 1000, left: 0, width: 1000, height: ((bot - top + 1) / nH) * 1000, del: true, delPx: { y0: bd.y0, y1: bd.y1, h: bd.h, n0: bd.n0, n1: bd.n1, elsewhere: bd.elsewhere } });
+        trail.push(`mechanical deletion evidence: baseline rows y≈${bd.y0}-${bd.y1}px have no counterpart in the new version and do not reappear elsewhere on the new page (${(bd.elsewhere * 100).toFixed(0)}% at best at one offset; removed at new y≈${bd.n0}px)`);
+      }
+    }
   }
 } catch (e) { alignSkipReason = `error: ${String(e.message).slice(0, 120)}`; console.warn(`AVC: row alignment failed for ${slug}: ${e.message}`); }
 
@@ -608,7 +706,7 @@ if (SHIFTID_ENABLE && heightsDiffer && bMeta.width === nMeta.width) {
 // content moved: mechanically incapable of holding a defect.
 const shiftProvenRegionNos = [];
 if (shiftIdentity) realClusters.forEach((c, i) => {
-  if (!c.insert && c.top >= shiftIdentity.topN) shiftProvenRegionNos.push(i + 1);
+  if (!c.insert && !c.del && c.top >= shiftIdentity.topN) shiftProvenRegionNos.push(i + 1);
 });
 
 const TOTAL_B64_BUDGET = 18 * 1024 * 1024;
@@ -681,8 +779,8 @@ if (topmost && !cropPicks.includes(topmost)) cropPicks[cropPicks.length - 1] = t
 // The bottom-strip region force-ships a crop the same way: it only exists when
 // NO other region reaches the page bottom, so its crop pair is the model's
 // only native-res look at the change it was appended for (~420px, trivial bytes).
-cropPicks = realClusters.filter(c => c.insert || c.bottomStrip)
-  .concat(cropPicks.filter(c => !c.insert && !c.bottomStrip))
+cropPicks = realClusters.filter(c => c.insert || c.del || c.bottomStrip)
+  .concat(cropPicks.filter(c => !c.insert && !c.del && !c.bottomStrip))
   .slice(0, wantHeaderStrip ? CROP_MAX - 1 : CROP_MAX);
 
 const cropPairs = []; // [{label, baseB64, newB64}] — base64 stays in this local const only
@@ -702,17 +800,29 @@ if (wantHeaderStrip) {
     }
   } catch (e) { console.warn(`AVC: header strip crop failed for ${slug}: ${e.message}`); }
 }
+// A deletion seam's two crops sit at DIFFERENT heights: the removed rows in the
+// baseline, and the spot they used to occupy in the new page (which by now shows
+// whatever followed them), each with the same context band around it.
+const DEL_CROP_CTX_PX = 200;
 for (const boxN of cropPicks) {
   try {
     const r = cropRegionPx(boxN);
-    const cb = await extractCrop(baselinePath, bMeta, r);
-    const cn = await extractCrop(newPath, nMeta, r);
+    let rb = r, rn = r;
+    if (boxN.del) {
+      const d = boxN.delPx, h = (d.y1 - d.y0 + 1) + 2 * DEL_CROP_CTX_PX;
+      rb = { left: 0, top: Math.max(0, d.y0 - DEL_CROP_CTX_PX), w: bMeta.width, h };
+      rn = { left: 0, top: Math.max(0, d.n0 - DEL_CROP_CTX_PX), w: nMeta.width, h };
+    }
+    const cb = await extractCrop(baselinePath, bMeta, rb);
+    const cn = await extractCrop(newPath, nMeta, rn);
     if (payloadB64 + b64len(cb) + b64len(cn) > TOTAL_B64_BUDGET) break;
     payloadB64 += b64len(cb) + b64len(cn);
     const regionNo = realClusters.indexOf(boxN) + 1;
     cropPairs.push({
       label: boxN.insert
         ? `Region ${regionNo} INSERTION SEAM: rows y≈${boxN.bandPx.y0}-${boxN.bandPx.y1}px of Image 2 exist ONLY in the new version — identify from THIS crop exactly what was inserted (the baseline crop shows the same location BEFORE the insertion)`
+        : boxN.del
+          ? `Region ${regionNo} DELETION SEAM: baseline rows y≈${boxN.delPx.y0}-${boxN.delPx.y1}px have NO counterpart in the new version — the BASELINE crop shows that content in place (with context above and below); the NEW crop shows the same spot afterwards, where the content that followed it now continues. Identify from THIS crop pair exactly what was removed`
         : boxN.bottomStrip
           ? `Region ${regionNo} BOTTOM-OF-PAGE STRIP (last ${BOTTOM_STRIP_PX}px of the page, full width, native resolution) — judge this page-chrome strip from THIS crop pair`
           : `Region ${regionNo}: top=${Math.round(boxN.top)},left=${Math.round(boxN.left)},width=${Math.round(boxN.width)},height=${Math.round(boxN.height)}`,
@@ -730,7 +840,7 @@ for (const boxN of cropPicks) {
 // The TOP EDGE of a giant region is where a removal/insertion/reshuffle
 // visibly manifests — show that sliver at native resolution instead.
 const GIANT_N = 150, FRONT_CTX_PX = 350, FRONT_H_PX = 1400;
-const giants = realClusters.filter(c => c.height > GIANT_N && !c.insert && !cropPicks.includes(c)
+const giants = realClusters.filter(c => c.height > GIANT_N && !c.insert && !c.del && !cropPicks.includes(c)
   && !shiftProvenRegionNos.includes(realClusters.indexOf(c) + 1));
 if (giants.length) {
   const g = giants.reduce((m, c) => (c.top < m.top ? c : m), giants[0]); // topmost giant = the change front
@@ -754,12 +864,17 @@ if (giants.length) {
 // it after them so region crop-pair numbering stays stable.
 if (bottomPair) cropPairs.push(bottomPair);
 
-const clustersForPrompt = realClusters.map(c => c.insert
+const clustersForPrompt = realClusters.map(c => (c.insert || c.del)
   // seam rects keep 1 decimal: whole-unit rounding is ±31px on a 62k-px page,
   // enough to shave a 35px band; 0.1 units keeps the drawn box on the rows
   ? { top: Math.round(c.top * 10) / 10, left: 0, width: 1000, height: Math.round(c.height * 10) / 10 }
   : { top: Math.round(c.top), left: Math.round(c.left), width: Math.round(c.width), height: Math.round(c.height) });
 const insertSeamNos = realClusters.map((c, i) => (c.insert ? i + 1 : 0)).filter(Boolean);
+const deleteSeamNos = realClusters.map((c, i) => (c.del ? i + 1 : 0)).filter(Boolean);
+// A region holding a deletion seam must not also be told its content is all
+// "present at shifted positions, NOT removed": the shifted part is, the removed
+// part is exactly what the seam reports (the deleted-section miss, 2026-11-02).
+const holdsDeleteSeam = (c) => realClusters.some(d => d.del && d !== c && d.top < c.top + c.height && d.top + d.height > c.top);
 
 // ---------------------------------------------------------------------------
 // Deterministic reshuffle evidence for GIANT regions (2026-07-29). Masonry
@@ -807,7 +922,7 @@ const dhashTiles = (data, width, height, stride) => {
 const popcount = (x) => { x -= (x >> 1) & 0x55555555; x = (x & 0x33333333) + ((x >> 2) & 0x33333333); x = (x + (x >> 4)) & 0x0f0f0f0f; return (x * 0x01010101) >> 24; };
 try {
   const GIANT_EVIDENCE_N = 150;
-  for (const g of realClusters.filter(c => c.height > GIANT_EVIDENCE_N && !c.insert
+  for (const g of realClusters.filter(c => c.height > GIANT_EVIDENCE_N && !c.insert && !c.del && !holdsDeleteSeam(c)
     && !shiftProvenRegionNos.includes(realClusters.indexOf(c) + 1)).slice(0, 2)) {
     const regionNo = realClusters.indexOf(g) + 1;
     const grab = async (path, meta) => {
@@ -842,6 +957,7 @@ if (clustersForPrompt.length) {
     if (shiftProvenRegionNos.includes(i + 1)) extra += ` — MECHANICAL DISPLACEMENT EVIDENCE: this region differs ONLY because its content sits ${shiftIdentity.deltaPx}px higher in the new version; a bottom-aligned pixel comparison PROVES the content itself is identical in both versions. Nothing here was added, removed, or changed — do NOT report a defect in this region`;
     const rc = realClusters[i];
     if (rc && rc.insert) extra += ` — MECHANICAL INSERTION EVIDENCE: rows y≈${rc.bandPx.y0}-${rc.bandPx.y1}px of Image 2 exist ONLY in the new version (content was INSERTED here; the content below is baseline content shifted down). If you report added content at this location, defect_region MUST be ${i + 1}. Whether the insertion is a defect remains YOUR judgment per the rules above (e.g. an extra tile row inside a rotating content grid is routine rotation)`;
+    if (rc && rc.del) extra += ` — MECHANICAL DELETION EVIDENCE: rows y≈${rc.delPx.y0}-${rc.delPx.y1}px of Image 1 (baseline) have NO counterpart in the new version and do not reappear elsewhere on the new page: that content was REMOVED here (in Image 2 the content that followed it now continues directly at y≈${rc.delPx.n0}px). If you report removed content at this location, defect_region MUST be ${i + 1}. Whether the removal is a defect remains YOUR judgment per the rules above (e.g. one row fewer in a rotating content grid is routine rotation)`;
     if (rc && rc.bottomStrip) extra += ` — BOTTOM PAGE STRIP: the last ${BOTTOM_STRIP_PX}px of the page (pinned navigation / footer chrome). Automated comparison found changed pixels here that were too small a share of the total diff to form a region of their own; inspect this strip's close-up crop pair and judge it under the normal rules`;
     return `Region ${i + 1}: ${JSON.stringify(c)}${extra}`;
   }).join('\n');
@@ -855,10 +971,10 @@ if (tailZone) {
   // The displacement proof subsumes the tail proof (its zone always includes
   // the page bottom), so it REPLACES that note rather than stacking with it.
   const shiftNote = shiftIdentity && (!tailIdentity || shiftIdentity.px > tailIdentity.kPx)
-    ? `${prefix}NOTE: the page HEIGHT changed between versions (baseline ${bMeta.height}px vs new ${nMeta.height}px). Mechanical verification PROVED that the bottom ${shiftIdentity.px}px of the two pages are IDENTICAL when aligned at the page bottom: every section below y=${Math.round(shiftIdentity.topN)} (0-1000, Image 2 frame) is the SAME content, merely sitting ${shiftIdentity.deltaPx}px ${shiftIdentity.dirWord.toUpperCase()} in the new version because the content ABOVE it got ${shiftIdentity.causeWord} (typically a rotating grid serving more or fewer rows). Nothing below y=${Math.round(shiftIdentity.topN)} was added, removed, or changed — do NOT report any element there as added, removed, moved, or changed, and do NOT explain the vertical offset as "a new section was inserted and pushed the rest down": the offset is the height change, and it happened ABOVE y=${Math.round(shiftIdentity.topN)}.`
+    ? `${prefix}NOTE: the page HEIGHT changed between versions (baseline ${bMeta.height}px vs new ${nMeta.height}px). Mechanical verification PROVED that the bottom ${shiftIdentity.px}px of the two pages are IDENTICAL when aligned at the page bottom: every section below y=${Math.round(shiftIdentity.topN)} (0-1000, Image 2 frame) is the SAME content, merely sitting ${shiftIdentity.deltaPx}px ${shiftIdentity.dirWord.toUpperCase()} in the new version because the content ABOVE it got ${shiftIdentity.causeWord} (${deleteSeamNos.length ? `Region ${deleteSeamNos.join(', Region ')} marks content REMOVED there` : 'typically a rotating grid serving more or fewer rows'}). Nothing below y=${Math.round(shiftIdentity.topN)} was added, removed, or changed — do NOT report any element there as added, removed, moved, or changed, and do NOT explain the vertical offset as "a new section was inserted and pushed the rest down": the offset is the height change, and it happened ABOVE y=${Math.round(shiftIdentity.topN)}.`
     : null;
   groundingText += shiftNote || (tailIdentity
-    ? `${prefix}NOTE: the page HEIGHT changed between versions (baseline ${bMeta.height}px vs new ${nMeta.height}px), so rows below y=${Math.round(tailZone.top)} (0-1000, Image 2 frame) could not be compared top-aligned. HOWEVER, mechanical verification PROVED the bottom ${tailIdentity.kPx}px of both pages unchanged when aligned at the page bottom (pixel-level comparison, no difference beyond trivial noise): nothing was added, removed, or changed near the bottom of the page — the height difference comes from content higher up (typically a rotating grid serving more or fewer rows). Do NOT report bottom-of-page content (footer links, footer sections) as added, removed, or missing.`
+    ? `${prefix}NOTE: the page HEIGHT changed between versions (baseline ${bMeta.height}px vs new ${nMeta.height}px), so rows below y=${Math.round(tailZone.top)} (0-1000, Image 2 frame) could not be compared top-aligned. HOWEVER, mechanical verification PROVED the bottom ${tailIdentity.kPx}px of both pages unchanged when aligned at the page bottom (pixel-level comparison, no difference beyond trivial noise): nothing was added, removed, or changed near the bottom of the page — the height difference comes from content higher up (${deleteSeamNos.length ? `Region ${deleteSeamNos.join(', Region ')} marks content REMOVED there` : 'typically a rotating grid serving more or fewer rows'}). Do NOT report bottom-of-page content (footer links, footer sections) as added, removed, or missing.`
     : `${prefix}NOTE: the page HEIGHT changed between versions, so rows below y=${Math.round(tailZone.top)} (0-1000, Image 2 frame) could NOT be pixel-compared — content may have been added or removed near the bottom of the page; inspect that area yourself${hasBottomPair ? ' using the PAGE-BOTTOM crop pair (both pages aligned at the page bottom — content present at the same distance from the page END in both crops is unchanged, merely shifted by the height difference)' : ''}.`);
 }
 
@@ -1350,6 +1466,21 @@ if (parsed && parsed.status === 'FAIL' && clusters && clusters.length) {
         trail.push(`insertion-seam backstop: added-content claim with no named region pinned to seam Region ${insertSeamNos[0]}`);
       }
     }
+    // Deletion-seam backstop (2026-11-02), same idea: a removal claim with no
+    // named region is pinned to the one deletion seam when its box is near the
+    // seam or the removed rows' old position (the model often boxes where the
+    // content used to be, which in Image 2 lies up to the removed height below).
+    if (!validRegionNo(p) && deleteSeamNos.length === 1 && (MISSING_RE.test(p.reason || '') || p.present_in_new === false)) {
+      const seam = clustersForPrompt[deleteSeamNos[0] - 1];
+      const dPx = realClusters[deleteSeamNos[0] - 1].delPx;
+      const reachN = ((dPx.y1 - dPx.y0 + 1) / nMeta.height) * 1000 + 60;
+      const bx0 = normBox(p.box);
+      const degenerate = !bx0 || (bx0.ymax - bx0.ymin <= 0 && bx0.xmax - bx0.xmin <= 0);
+      if (degenerate || (bx0.ymin < seam.top + seam.height + reachN && bx0.ymax > seam.top - 60)) {
+        p.defect_region = deleteSeamNos[0];
+        trail.push(`deletion-seam backstop: removed-content claim with no named region pinned to seam Region ${deleteSeamNos[0]}`);
+      }
+    }
     // Location contract (2026-07-29 incident): the model's raw box coordinates
     // are unreliable — correct "logo missing" reason arrived with a box over
     // mid-page blobs, so the report highlighted 3 irrelevant areas. A FAIL must
@@ -1570,11 +1701,14 @@ return [{
     reasonSource,
     defectRegion: finalRegionNo,
     defectRegionRect: finalRegionNo ? clustersForPrompt[finalRegionNo - 1] : null,
-    defectRegionInsert: !!(finalRegionNo && realClusters[finalRegionNo - 1] && realClusters[finalRegionNo - 1].insert),
+    // Seam regions (insertion OR deletion) are drawn as their own rect by Prepare
+    // Failure HTML instead of ranking the displaced-content blobs around them.
+    defectRegionInsert: !!(finalRegionNo && realClusters[finalRegionNo - 1] && (realClusters[finalRegionNo - 1].insert || realClusters[finalRegionNo - 1].del)),
     alignInsertBands: insertBandsKept.length ? insertBandsKept.map(bd => ({ y0: bd.y0, y1: bd.y1, h: bd.h, gapNewLen: bd.gapNewLen })) : null,
     alignCoverage,
     alignSkipReason,
     alignDeleteGaps,
+    alignDeleteBands: deleteBandsKept.length ? deleteBandsKept.map(bd => ({ y0: bd.y0, y1: bd.y1, h: bd.h, n0: bd.n0, elsewhere: Math.round(bd.elsewhere * 100) / 100 })) : null,
     tailIdentity,
     shiftIdentity: shiftIdentity ? { px: shiftIdentity.px, mismatchPx: shiftIdentity.mismatchPx, deltaPx: shiftIdentity.deltaPx, provenRegions: shiftProvenRegionNos } : null,
     diffClusters: clustersForPrompt,
